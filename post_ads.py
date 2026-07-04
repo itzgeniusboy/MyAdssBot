@@ -115,18 +115,24 @@ def main():
     print(f"Target Channel: {chat_id}")
     print(f"Loop duration limit set to {run_duration_min} minutes.")
 
+    # Enable unbuffered output to see logs in real-time
+    sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
     start_time = time.time()
     last_update_id = None
     last_ad_check_time = 0  # Force first-time check immediately
 
+    # Create a persistent session to keep the TCP connection alive (extremely fast replies!)
+    session = requests.Session()
+
     # Initialize Telegram update offset to only reply to NEW messages
     try:
-        init_res = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", params={"limit": 1}, timeout=10).json()
+        init_res = session.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", params={"limit": 1}, timeout=10).json()
         if init_res.get("ok") and init_res.get("result"):
             last_update_id = init_res["result"][-1]["update_id"]
-            print(f"Initialized update offset to {last_update_id + 1} to ignore previous messages.")
+            print(f"Initialized update offset to {last_update_id + 1} to ignore previous messages.", flush=True)
     except Exception as e:
-        print(f"Could not initialize update offset: {e}")
+        print(f"Could not initialize update offset: {e}", flush=True)
 
     # Main continuous polling loop
     while True:
@@ -134,21 +140,26 @@ def main():
         elapsed_minutes = (current_time - start_time) / 60.0
 
         if elapsed_minutes >= run_duration_min:
-            print(f"Reached configured run duration of {run_duration_min:.1f} minutes. Exiting gracefully to allow workflow restart...")
+            print(f"Reached configured run duration of {run_duration_min:.1f} minutes. Exiting gracefully to allow workflow restart...", flush=True)
             break
+
+        had_updates = False
 
         # 1. Long-polling for private messages (Instant reply system)
         try:
-            params = {"limit": 100, "allowed_updates": ["message"], "timeout": 15}
+            # Shortened timeout to 5 seconds to remain highly responsive and avoid blocking other events
+            params = {"limit": 100, "allowed_updates": ["message"], "timeout": 5}
             if last_update_id is not None:
                 params["offset"] = last_update_id + 1
 
             url_get_updates = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-            response = requests.get(url_get_updates, params=params, timeout=20)
+            response = session.get(url_get_updates, params=params, timeout=10)
             if response.status_code == 200:
                 res_json = response.json()
                 if res_json.get("ok"):
                     updates = res_json.get("result", [])
+                    if updates:
+                        had_updates = True
                     for update in updates:
                         last_update_id = update.get("update_id")
                         message = update.get("message")
@@ -163,7 +174,7 @@ def main():
                         first_name = sender.get("first_name", "User")
 
                         if chat_type == "private" and chat_id_private:
-                            print(f"Received direct message from {first_name} (Chat ID: {chat_id_private}): {text}")
+                            print(f"Received direct message from {first_name} (Chat ID: {chat_id_private}): {text}", flush=True)
                             url_send_message = f"https://api.telegram.org/bot{bot_token}/sendMessage"
                             
                             reply_text = (
@@ -180,46 +191,52 @@ def main():
                                 "text": reply_text,
                                 "parse_mode": "HTML"
                             }
-                            requests.post(url_send_message, json=payload, timeout=10)
+                            # Send message using persistent session
+                            session.post(url_send_message, json=payload, timeout=10)
         except Exception as e:
-            print(f"Error checking Telegram updates: {e}")
+            print(f"Error checking Telegram updates: {e}", flush=True)
 
-        # 2. Check scheduled ads (run every 15 seconds to check, but log only every 10 minutes or on posting)
-        should_log_ad_status = (current_time - last_ad_check_time) >= 600 or last_ad_check_time == 0
-        
-        config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
-        state_data = load_json_file(DEFAULT_STATE_FILE, {})
-
-        if config_data:
-            state_updated = False
-            if should_log_ad_status:
-                print(f"Checking scheduled ads... (Next log in 10 mins or on post)")
-                last_ad_check_time = current_time
-
-            for ad in config_data:
-                ad_id = str(ad.get("id"))
-                interval_minutes = ad.get("interval_minutes", 120)
-                
-                last_posted = state_data.get(ad_id, 0)
-                ad_elapsed_minutes = (time.time() - last_posted) / 60.0
-
-                if should_log_ad_status:
-                    print(f" - Ad '{ad_id}': Interval: {interval_minutes}m, Last posted: {time.strftime('%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {ad_elapsed_minutes:.1f}m")
-
-                if ad_elapsed_minutes >= interval_minutes:
-                    # Try posting
-                    success = post_ad_to_telegram(bot_token, chat_id, ad)
-                    if success:
-                        state_data[ad_id] = time.time()
-                        state_updated = True
-                        last_ad_check_time = 0 # Force immediate refresh of logging status on next loop
+        # 2. Check scheduled ads - only check every 60 seconds to avoid wasting disk resources
+        if (current_time - last_ad_check_time) >= 60 or last_ad_check_time == 0:
+            should_log_ad_status = (current_time - last_ad_check_time) >= 600 or last_ad_check_time == 0
+            last_ad_check_time = current_time
             
-            if state_updated:
-                print("Saving updated state back to state.json...")
-                save_json_file(DEFAULT_STATE_FILE, state_data)
+            config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
+            state_data = load_json_file(DEFAULT_STATE_FILE, {})
 
-        # Brief pause to keep CPU usage low
-        time.sleep(3)
+            if config_data:
+                state_updated = False
+                if should_log_ad_status:
+                    print(f"Checking scheduled ads... (Next log in 10 mins or on post)", flush=True)
+
+                for ad in config_data:
+                    ad_id = str(ad.get("id"))
+                    interval_minutes = ad.get("interval_minutes", 120)
+                    
+                    last_posted = state_data.get(ad_id, 0)
+                    ad_elapsed_minutes = (time.time() - last_posted) / 60.0
+
+                    if should_log_ad_status:
+                        print(f" - Ad '{ad_id}': Interval: {interval_minutes}m, Last posted: {time.strftime('%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {ad_elapsed_minutes:.1f}m", flush=True)
+
+                    if ad_elapsed_minutes >= interval_minutes:
+                        # Try posting using persistent session helper if available, or fall back
+                        success = post_ad_to_telegram(bot_token, chat_id, ad)
+                        if success:
+                            state_data[ad_id] = time.time()
+                            state_updated = True
+                            # Force immediate refresh of logging status next check
+                            last_ad_check_time = 0
+                
+                if state_updated:
+                    print("Saving updated state back to state.json...", flush=True)
+                    save_json_file(DEFAULT_STATE_FILE, state_data)
+
+        # 3. Dynamic polling sleep:
+        # If we had updates, process next updates IMMEDIATELY without sleep (0 seconds)
+        # If no updates, rest for 1 second to keep CPU low and prevent rate limiting
+        if not had_updates:
+            time.sleep(1)
 
     print("Ad Posting Run Completed.")
 
