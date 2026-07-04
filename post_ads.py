@@ -322,11 +322,10 @@ def main():
                                     state_data["admin_states"][str(chat_id_private)] = user_state
                                     save_json_file(DEFAULT_STATE_FILE, state_data)
                                     
-                                    # Prompt for step 1
+                                    # Prompt for step 1 (removed formatting advice)
                                     prompt_text = (
                                         "✍️ <b>Step 1 of 5: Enter Ad Description/Caption</b>\n\n"
-                                        "Please type or paste the ad caption/description text.\n"
-                                        "You can use HTML tags for formatting (e.g., <code>&lt;b&gt;bold&lt;/b&gt;</code>, <code>&lt;i&gt;italic&lt;/i&gt;</code>).\n\n"
+                                        "Please type or paste the ad caption/description text.\n\n"
                                         "<i>Example:</i>\n"
                                         "🔥 <b>Premium Leaks & News</b>\n"
                                         "Join us for instant exclusive tech news!"
@@ -362,10 +361,11 @@ def main():
                                             text_list += f"⏰ <b>Interval:</b> {ad.get('interval_minutes')} mins | 🎬 <b>Format:</b> {ad.get('media_type', 'text').upper()}\n"
                                             text_list += f"📝 <b>Preview:</b> <i>{clean_snippet}</i>\n\n"
                                             
-                                            # Add Send Now and Delete buttons side-by-side
+                                            # Add Edit, Send Now and Delete buttons side-by-side
                                             keyboard.append([
-                                                {"text": f"🚀 Send Now ({ad_id})", "callback_data": f"admin_post_now_{ad_id}"},
-                                                {"text": f"🗑️ Delete ({ad_id})", "callback_data": f"admin_del_{ad_id}"}
+                                                {"text": f"✏️ Edit ({ad_id})", "callback_data": f"admin_edit_{ad_id}"},
+                                                {"text": f"🚀 Send Now", "callback_data": f"admin_post_now_{ad_id}"},
+                                                {"text": f"🗑️ Delete", "callback_data": f"admin_del_{ad_id}"}
                                             ])
                                         
                                         keyboard.append([{"text": "⬅️ Back to Admin Control", "callback_data": "admin_refresh"}])
@@ -424,6 +424,68 @@ def main():
                                 elif cq_data == "admin_refresh":
                                     num_channels = len(state_data.get("active_channels", [chat_id]))
                                     show_admin_panel(session, bot_token, chat_id_private, num_channels, len(config_data))
+
+                                elif cq_data.startswith("admin_edit_") and not cq_data.startswith("admin_editopt_"):
+                                    edit_id = cq_data.replace("admin_edit_", "")
+                                    target_ad = next((ad for ad in config_data if str(ad.get("id")) == str(edit_id)), None)
+                                    if target_ad:
+                                        text_list = (
+                                            f"✏️ <b>Edit Ad Console</b> (ID: <code>{edit_id}</code>)\n\n"
+                                            f"📝 <b>Current Caption:</b>\n{target_ad.get('caption', '')}\n\n"
+                                            f"🔗 <b>Button Label:</b> {target_ad.get('button_text')}\n"
+                                            f"🔗 <b>Button URL:</b> {target_ad.get('button_url')}\n"
+                                            f"⏰ <b>Interval:</b> {target_ad.get('interval_minutes')} mins\n\n"
+                                            f"Choose what you would like to edit below:"
+                                        )
+                                        keyboard = [
+                                            [{"text": "📝 Edit Caption", "callback_data": f"admin_editopt_caption_{edit_id}"}],
+                                            [{"text": "🏷️ Edit Button Label", "callback_data": f"admin_editopt_label_{edit_id}"}],
+                                            [{"text": "🔗 Edit Button URL", "callback_data": f"admin_editopt_url_{edit_id}"}],
+                                            [{"text": "⏰ Edit Posting Interval", "callback_data": f"admin_editopt_interval_{edit_id}"}],
+                                            [{"text": "⬅️ Back to Ads List", "callback_data": "admin_list"}]
+                                        ]
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": text_list,
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": keyboard})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or already deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+
+                                elif cq_data.startswith("admin_editopt_"):
+                                    parts = cq_data.split("_")
+                                    if len(parts) >= 4:
+                                        opt = parts[2]
+                                        ad_id = "_".join(parts[3:])
+                                        
+                                        user_state["step"] = f"awaiting_edit_{opt}"
+                                        user_state["editing_ad_id"] = ad_id
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        prompts = {
+                                            "caption": "✍️ <b>Edit Caption/Description</b>\n\nPlease enter the new caption/description text for your ad below. It will automatically be formatted nicely as a blockquote:",
+                                            "label": "🏷️ <b>Edit Button Label</b>\n\nPlease enter the new text/label for the button (e.g. <i>Join Now! 🚀</i>):",
+                                            "url": "🔗 <b>Edit Button URL</b>\n\nPlease enter the new destination URL (e.g. <i>https://t.me/FeaturesticLeaks</i>):",
+                                            "interval": "⏰ <b>Edit Posting Interval</b>\n\nPlease enter the new posting interval in minutes (e.g. <i>120</i> or <i>350</i>):"
+                                        }
+                                        
+                                        prompt_text = prompts.get(opt, "Please type the new value below:")
+                                        reply_markup = {
+                                            "inline_keyboard": [[{"text": "❌ Cancel", "callback_data": f"admin_edit_{ad_id}"}]]
+                                        }
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": prompt_text,
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps(reply_markup)
+                                        }, timeout=10)
 
                                 elif cq_data == "admin_channels":
                                     current_chans = state_data.get("active_channels", [chat_id])
@@ -614,6 +676,181 @@ def main():
                                         "text": "❌ Ad creation cancelled. Main menu loaded.",
                                         "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "admin_refresh"}]]})
                                     }, timeout=10)
+                                    continue
+
+                                if current_step == "awaiting_edit_caption":
+                                    if not text:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Please send a valid text description."
+                                        }, timeout=10)
+                                        continue
+                                    
+                                    ad_id = user_state.get("editing_ad_id")
+                                    import re
+                                    clean = text.strip()
+                                    while clean.startswith("<b>") and clean.endswith("</b>"):
+                                        clean = clean[3:-4].strip()
+                                    while clean.startswith("<strong>") and clean.endswith("</strong>"):
+                                        clean = clean[8:-9].strip()
+                                    
+                                    clean = re.sub(r'</?tg-spoiler>', '', clean)
+                                    clean = re.sub(r'<span\s+class=["\']tg-spoiler["\']>', '', clean)
+                                    clean = re.sub(r'</?blockquote>', '', clean)
+                                    clean = re.sub(r'</span>', '', clean)
+                                    formatted_caption = f"<blockquote><b>{clean.strip()}</b></blockquote>"
+                                    
+                                    updated = False
+                                    for ad in config_data:
+                                        if str(ad.get("id")) == str(ad_id):
+                                            ad["caption"] = formatted_caption
+                                            updated = True
+                                            break
+                                            
+                                    if updated:
+                                        save_json_file(DEFAULT_CONFIG_FILE, config_data)
+                                        user_state["step"] = "None"
+                                        user_state["editing_ad_id"] = None
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Caption updated successfully for Ad ID:</b> <code>{ad_id}</code>!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to Ad", "callback_data": f"admin_edit_{ad_id}"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or was deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+                                    continue
+
+                                if current_step == "awaiting_edit_label":
+                                    if not text:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Please send a valid button label text."
+                                        }, timeout=10)
+                                        continue
+                                    
+                                    ad_id = user_state.get("editing_ad_id")
+                                    updated = False
+                                    for ad in config_data:
+                                        if str(ad.get("id")) == str(ad_id):
+                                            ad["button_text"] = text.strip()
+                                            updated = True
+                                            break
+                                            
+                                    if updated:
+                                        save_json_file(DEFAULT_CONFIG_FILE, config_data)
+                                        user_state["step"] = "None"
+                                        user_state["editing_ad_id"] = None
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Button label updated successfully for Ad ID:</b> <code>{ad_id}</code>!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to Ad", "callback_data": f"admin_edit_{ad_id}"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or was deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+                                    continue
+
+                                if current_step == "awaiting_edit_url":
+                                    if not text or not (text.startswith("http://") or text.startswith("https://") or text.startswith("t.me/")):
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Please enter a valid URL starting with <code>http://</code> or <code>https://</code>.",
+                                            "parse_mode": "HTML"
+                                        }, timeout=10)
+                                        continue
+                                    
+                                    normalized_link = text.strip()
+                                    if normalized_link.startswith("t.me/"):
+                                        normalized_link = "https://" + normalized_link
+                                        
+                                    ad_id = user_state.get("editing_ad_id")
+                                    updated = False
+                                    for ad in config_data:
+                                        if str(ad.get("id")) == str(ad_id):
+                                            ad["button_url"] = normalized_link
+                                            updated = True
+                                            break
+                                            
+                                    if updated:
+                                        save_json_file(DEFAULT_CONFIG_FILE, config_data)
+                                        user_state["step"] = "None"
+                                        user_state["editing_ad_id"] = None
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Button URL updated successfully for Ad ID:</b> <code>{ad_id}</code>!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to Ad", "callback_data": f"admin_edit_{ad_id}"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or was deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+                                    continue
+
+                                if current_step == "awaiting_edit_interval":
+                                    try:
+                                        interval_min = int(text)
+                                        if interval_min <= 0:
+                                            raise ValueError()
+                                    except ValueError:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Please enter a valid positive integer for minutes.",
+                                            "parse_mode": "HTML"
+                                        }, timeout=10)
+                                        continue
+                                        
+                                    ad_id = user_state.get("editing_ad_id")
+                                    updated = False
+                                    for ad in config_data:
+                                        if str(ad.get("id")) == str(ad_id):
+                                            ad["interval_minutes"] = interval_min
+                                            updated = True
+                                            break
+                                            
+                                    if updated:
+                                        save_json_file(DEFAULT_CONFIG_FILE, config_data)
+                                        user_state["step"] = "None"
+                                        user_state["editing_ad_id"] = None
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Posting interval updated successfully to {interval_min} minutes for Ad ID:</b> <code>{ad_id}</code>!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to Ad", "callback_data": f"admin_edit_{ad_id}"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or was deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
                                     continue
 
                                 if current_step == "awaiting_add_channel":
