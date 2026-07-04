@@ -125,6 +125,16 @@ def main():
     # Create a persistent session to keep the TCP connection alive (extremely fast replies!)
     session = requests.Session()
 
+    # Get Bot Username dynamically to build deep linking 'Add to Channel' URLs!
+    bot_username = "bot"
+    try:
+        me_res = session.get(f"https://api.telegram.org/bot{bot_token}/getMe", timeout=10).json()
+        if me_res.get("ok"):
+            bot_username = me_res["result"].get("username", "bot")
+            print(f"Fetched Bot details successfully. Username: @{bot_username}", flush=True)
+    except Exception as e:
+        print(f"Could not fetch bot details: {e}", flush=True)
+
     # Initialize Telegram update offset to only reply to NEW messages
     try:
         init_res = session.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", params={"limit": 1}, timeout=10).json()
@@ -145,10 +155,13 @@ def main():
 
         had_updates = False
 
-        # 1. Long-polling for private messages (Instant reply system)
+        # 1. Long-polling for private messages & admin addition updates
         try:
-            # Shortened timeout to 5 seconds to remain highly responsive and avoid blocking other events
-            params = {"limit": 100, "allowed_updates": ["message"], "timeout": 5}
+            params = {
+                "limit": 100,
+                "allowed_updates": json.dumps(["message", "my_chat_member"]),
+                "timeout": 5
+            }
             if last_update_id is not None:
                 params["offset"] = last_update_id + 1
 
@@ -162,6 +175,55 @@ def main():
                         had_updates = True
                     for update in updates:
                         last_update_id = update.get("update_id")
+                        
+                        # --- Check for Channel Member Addition Updates (Added as Admin) ---
+                        my_chat_member = update.get("my_chat_member")
+                        if my_chat_member:
+                            chat = my_chat_member.get("chat", {})
+                            chat_id_channel = chat.get("id")
+                            chat_title = chat.get("title", "Channel")
+                            chat_type = chat.get("type")
+                            
+                            new_chat_member = my_chat_member.get("new_chat_member", {})
+                            status = new_chat_member.get("status")
+                            
+                            if chat_type in ["channel", "supergroup"]:
+                                # Reload state to keep it fresh
+                                state_data = load_json_file(DEFAULT_STATE_FILE, {})
+                                if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                                    state_data["active_channels"] = [chat_id]
+                                    
+                                if status == "administrator":
+                                    # Bot is now added as admin to this channel!
+                                    if chat_id_channel not in state_data["active_channels"] and str(chat_id_channel) not in state_data["active_channels"]:
+                                        state_data["active_channels"].append(chat_id_channel)
+                                        print(f"🎉 Bot successfully added as Admin to: {chat_title} (ID: {chat_id_channel})", flush=True)
+                                        
+                                        # Send a cheerful confirmation message directly to the new channel!
+                                        try:
+                                            welcome_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                                            welcome_text = (
+                                                f"🚀 <b>Ad Posting Bot Active!</b>\n\n"
+                                                f"Aapne is bot ko successfully admin banaya hai. Ab is channel par automatic scheduled ads post hona shuru ho jayenge! ✨\n\n"
+                                                f"📢 <b>Status:</b> Active & Running 24x7!"
+                                            )
+                                            session.post(welcome_url, json={"chat_id": chat_id_channel, "text": welcome_text, "parse_mode": "HTML"}, timeout=10)
+                                        except Exception as ex:
+                                            print(f"Could not send welcome message to channel: {ex}", flush=True)
+                                        
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                elif status in ["left", "kicked", "member"]:
+                                    # Bot was removed or demoted from admin
+                                    active_channels = state_data.get("active_channels", [])
+                                    if chat_id_channel in active_channels:
+                                        active_channels.remove(chat_id_channel)
+                                    if str(chat_id_channel) in active_channels:
+                                        active_channels.remove(str(chat_id_channel))
+                                    state_data["active_channels"] = active_channels
+                                    print(f"⚠️ Bot removed or demoted from: {chat_title} (ID: {chat_id_channel})", flush=True)
+                                    save_json_file(DEFAULT_STATE_FILE, state_data)
+
+                        # --- Check for User direct/private Messages ---
                         message = update.get("message")
                         if not message:
                             continue
@@ -180,18 +242,29 @@ def main():
                             reply_text = (
                                 f"👋 <b>Namaste {first_name}! Aapka Ad Posting Bot Bilkul Active Hai!</b> 🚀\n\n"
                                 f"Mujhe aapka message mila: <i>\"{text}\"</i>\n\n"
-                                f"📢 <b>Target Channel:</b> {chat_id}\n"
-                                f"⏰ <b>Uptime:</b> Active run: {elapsed_minutes:.1f} mins (Total cycle: {run_duration_min:.0f} mins).\n"
-                                f"💻 <b>Status:</b> GitHub Actions par background continuous run bilkul live aur 24x7 active hai!\n\n"
-                                f"Bot completely automatic chal rha hai aur har cycle end hone par safety restart hota hai! ✨"
+                                f"📢 <b>Uptime:</b> Active run: {elapsed_minutes:.1f} mins (Total cycle: {run_duration_min:.0f} mins).\n"
+                                f"💻 <b>Status:</b> GitHub Actions par background continuous loop chalu hai!\n\n"
+                                f"✨ <b>Kisi bhi channel me ads post karne ke liye:</b> Niche diye gaye button par click karein aur bot ko admin permission dein. Ye automatic usi channel me ads post karne lagega!"
                             )
+                            
+                            # Build the 'Add to Channel' direct deep link button with admin permissions!
+                            # post_messages, delete_messages, edit_messages, invite_users
+                            add_to_channel_url = f"https://t.me/{bot_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
+                            
+                            reply_markup = {
+                                "inline_keyboard": [
+                                    [
+                                        {"text": "📢 Add to Channel (Promote Admin)", "url": add_to_channel_url}
+                                    ]
+                                ]
+                            }
                             
                             payload = {
                                 "chat_id": chat_id_private,
                                 "text": reply_text,
-                                "parse_mode": "HTML"
+                                "parse_mode": "HTML",
+                                "reply_markup": json.dumps(reply_markup)
                             }
-                            # Send message using persistent session
                             session.post(url_send_message, json=payload, timeout=10)
         except Exception as e:
             print(f"Error checking Telegram updates: {e}", flush=True)
@@ -204,29 +277,53 @@ def main():
             config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
             state_data = load_json_file(DEFAULT_STATE_FILE, {})
 
-            if config_data:
-                state_updated = False
+            # Initialize active channels list if not present
+            if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                state_data["active_channels"] = [chat_id]
+                save_json_file(DEFAULT_STATE_FILE, state_data)
+
+            active_channels = state_data["active_channels"]
+            # Ensure the configured default channel is in the active list
+            if chat_id not in active_channels and str(chat_id) not in active_channels:
+                active_channels.insert(0, chat_id)
+
+            if "channel_states" not in state_data or not isinstance(state_data["channel_states"], dict):
+                state_data["channel_states"] = {}
+
+            state_updated = False
+
+            if config_data and active_channels:
                 if should_log_ad_status:
-                    print(f"Checking scheduled ads... (Next log in 10 mins or on post)", flush=True)
+                    print(f"Checking scheduled ads for {len(active_channels)} channels...", flush=True)
 
-                for ad in config_data:
-                    ad_id = str(ad.get("id"))
-                    interval_minutes = ad.get("interval_minutes", 120)
-                    
-                    last_posted = state_data.get(ad_id, 0)
-                    ad_elapsed_minutes = (time.time() - last_posted) / 60.0
+                for active_chan in active_channels:
+                    chan_str = str(active_chan)
+                    if chan_str not in state_data["channel_states"]:
+                        state_data["channel_states"][chan_str] = {}
 
-                    if should_log_ad_status:
-                        print(f" - Ad '{ad_id}': Interval: {interval_minutes}m, Last posted: {time.strftime('%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {ad_elapsed_minutes:.1f}m", flush=True)
+                    chan_state = state_data["channel_states"][chan_str]
 
-                    if ad_elapsed_minutes >= interval_minutes:
-                        # Try posting using persistent session helper if available, or fall back
-                        success = post_ad_to_telegram(bot_token, chat_id, ad)
-                        if success:
-                            state_data[ad_id] = time.time()
-                            state_updated = True
-                            # Force immediate refresh of logging status next check
-                            last_ad_check_time = 0
+                    for ad in config_data:
+                        ad_id = str(ad.get("id"))
+                        interval_minutes = ad.get("interval_minutes", 120)
+                        
+                        # Fallback to general timestamp if channel state is not populated
+                        last_posted = chan_state.get(ad_id, state_data.get(ad_id, 0))
+                        ad_elapsed_minutes = (time.time() - last_posted) / 60.0
+
+                        if should_log_ad_status:
+                            print(f" - Channel {active_chan} | Ad '{ad_id}': Interval: {interval_minutes}m, Last posted: {time.strftime('%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {ad_elapsed_minutes:.1f}m", flush=True)
+
+                        if ad_elapsed_minutes >= interval_minutes:
+                            # Try posting to this specific channel
+                            success = post_ad_to_telegram(bot_token, active_chan, ad)
+                            if success:
+                                chan_state[ad_id] = time.time()
+                                state_data["channel_states"][chan_str] = chan_state
+                                state_data[ad_id] = time.time()
+                                state_updated = True
+                                # Force immediate refresh of logging status next check
+                                last_ad_check_time = 0
                 
                 if state_updated:
                     print("Saving updated state back to state.json...", flush=True)
