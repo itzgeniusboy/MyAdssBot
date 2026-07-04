@@ -240,21 +240,24 @@ def main():
                             url_send_message = f"https://api.telegram.org/bot{bot_token}/sendMessage"
                             
                             reply_text = (
-                                f"👋 <b>Namaste {first_name}! Aapka Ad Posting Bot Bilkul Active Hai!</b> 🚀\n\n"
-                                f"Mujhe aapka message mila: <i>\"{text}\"</i>\n\n"
-                                f"📢 <b>Uptime:</b> Active run: {elapsed_minutes:.1f} mins (Total cycle: {run_duration_min:.0f} mins).\n"
-                                f"💻 <b>Status:</b> GitHub Actions par background continuous loop chalu hai!\n\n"
-                                f"✨ <b>Kisi bhi channel me ads post karne ke liye:</b> Niche diye gaye button par click karein aur bot ko admin permission dein. Ye automatic usi channel me ads post karne lagega!"
+                                f"👋 <b>Hello {first_name}! Welcome to Telegram Ad Poster Bot!</b> 🌟\n\n"
+                                f"Aapka automated scheduled ad poster system fully active aur 24x7 running hai! ✨\n\n"
+                                f"📢 <b>How to Run Ads on Your Channel:</b>\n"
+                                f"1️⃣ Niche diye gaye <b>\"Add Me to Your Channel\"</b> button par click karein.\n"
+                                f"2️⃣ Apna desired channel select karein aur bot ko add karein.\n"
+                                f"3️⃣ Bot ko <b>Admin permissions</b> (Post, Edit, and Delete Messages) dein.\n"
+                                f"4️⃣ Bus! Bot automatically scheduled intervals par configured ads post karna shuru kar dega.\n\n"
+                                f"💻 <b>System Status:</b> Online 🟢\n"
+                                f"⏰ <b>Uptime Cycle:</b> Continuous loops via GitHub Actions."
                             )
                             
                             # Build the 'Add to Channel' direct deep link button with admin permissions!
-                            # post_messages, delete_messages, edit_messages, invite_users
                             add_to_channel_url = f"https://t.me/{bot_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
                             
                             reply_markup = {
                                 "inline_keyboard": [
                                     [
-                                        {"text": "📢 Add to Channel (Promote Admin)", "url": add_to_channel_url}
+                                        {"text": "🚀 Add Me to Your Channel (Run Ads)", "url": add_to_channel_url}
                                     ]
                                 ]
                             }
