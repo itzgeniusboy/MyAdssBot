@@ -46,6 +46,15 @@ def post_ad_to_telegram(bot_token, chat_id, ad):
     button_text = ad.get("button_text")
     button_url = ad.get("button_url")
 
+    # Force formatting to be Bold and Spoiler as requested:
+    # "Ye hmara bold and spoiler ma he rhnaa chahea joo bhii Caption hoo"
+    if caption:
+        caption_stripped = caption.strip()
+        if not (caption_stripped.startswith("<b><tg-spoiler>") or caption_stripped.startswith("<b><span class=\"tg-spoiler\">")):
+            if caption_stripped.startswith("<b>") and caption_stripped.endswith("</b>"):
+                caption_stripped = caption_stripped[3:-4]
+            caption = f"<b><tg-spoiler>{caption_stripped}</tg-spoiler></b>"
+
     # Construct the inline keyboard button if specified
     reply_markup = {}
     if button_text and button_url:
@@ -331,15 +340,23 @@ def main():
                                     else:
                                         text_list = "📋 <b>Your Active Configured Ads:</b>\n\n"
                                         keyboard = []
+                                        import re
                                         for i, ad in enumerate(config_data):
                                             ad_id = ad.get("id", f"ad_{i}")
-                                            cap_snippet = ad.get("caption", ad.get("text", ""))[:45] + "..."
-                                            text_list += f"• <b>Ad ID:</b> <code>{ad_id}</code>\n"
-                                            text_list += f"  <b>Type:</b> {ad.get('media_type', 'text').upper()} | <b>Interval:</b> {ad.get('interval_minutes')} min\n"
-                                            text_list += f"  <b>Text:</b> <i>{cap_snippet}</i>\n\n"
+                                            cap_snippet = ad.get("caption", ad.get("text", ""))
+                                            # Strip HTML tags to show clean preview snippet
+                                            clean_snippet = re.sub(r'<[^>]+>', '', cap_snippet).strip()
+                                            clean_snippet = clean_snippet[:45] + "..." if len(clean_snippet) > 45 else clean_snippet
                                             
-                                            # Add delete button for each ad
-                                            keyboard.append([{"text": f"🗑️ Delete Ad: {ad_id}", "callback_data": f"admin_del_{ad_id}"}])
+                                            text_list += f"📌 <b>Ad ID:</b> <code>{ad_id}</code>\n"
+                                            text_list += f"⏰ <b>Interval:</b> {ad.get('interval_minutes')} mins | 🎬 <b>Format:</b> {ad.get('media_type', 'text').upper()}\n"
+                                            text_list += f"📝 <b>Preview:</b> <i>{clean_snippet}</i>\n\n"
+                                            
+                                            # Add Send Now and Delete buttons side-by-side
+                                            keyboard.append([
+                                                {"text": f"🚀 Send Now ({ad_id})", "callback_data": f"admin_post_now_{ad_id}"},
+                                                {"text": f"🗑️ Delete ({ad_id})", "callback_data": f"admin_del_{ad_id}"}
+                                            ])
                                         
                                         keyboard.append([{"text": "⬅️ Back to Admin Control", "callback_data": "admin_refresh"}])
                                         reply_markup = {"inline_keyboard": keyboard}
@@ -366,6 +383,34 @@ def main():
                                         "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
                                     }, timeout=10)
 
+                                elif cq_data.startswith("admin_post_now_"):
+                                    post_id = cq_data.replace("admin_post_now_", "")
+                                    target_ad = next((ad for ad in config_data if str(ad.get("id")) == str(post_id)), None)
+                                    if target_ad:
+                                        state_data = load_json_file(DEFAULT_STATE_FILE, {})
+                                        active_channels = state_data.get("active_channels", [chat_id])
+                                        if chat_id not in active_channels and str(chat_id) not in active_channels:
+                                            active_channels.insert(0, chat_id)
+                                        
+                                        success_count = 0
+                                        for active_chan in active_channels:
+                                            if post_ad_to_telegram(bot_token, active_chan, target_ad):
+                                                success_count += 1
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"🚀 <b>Instant Ad Broadcast Complete!</b>\n\nSent Ad ID: <code>{post_id}</code> successfully to {success_count} channel(s) right now!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Ad not found or already deleted.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to List", "callback_data": "admin_list"}]]})
+                                        }, timeout=10)
+
                                 elif cq_data == "admin_refresh":
                                     num_channels = len(state_data.get("active_channels", [chat_id]))
                                     show_admin_panel(session, bot_token, chat_id_private, num_channels, len(config_data))
@@ -388,6 +433,16 @@ def main():
                                         config_data.append(ad_object)
                                         save_json_file(DEFAULT_CONFIG_FILE, config_data)
                                         
+                                        # Instantly post the newly created ad to all active channels!
+                                        active_channels = state_data.get("active_channels", [chat_id])
+                                        if chat_id not in active_channels and str(chat_id) not in active_channels:
+                                            active_channels.insert(0, chat_id)
+                                        
+                                        success_count = 0
+                                        for active_chan in active_channels:
+                                            if post_ad_to_telegram(bot_token, active_chan, ad_object):
+                                                success_count += 1
+                                                
                                         # Clear state
                                         user_state["step"] = "None"
                                         user_state["temp_ad"] = {}
@@ -396,10 +451,11 @@ def main():
                                         
                                         # Success message
                                         confirm_text = (
-                                            f"🎉 <b>Premium Ad Configured Successfully!</b>\n\n"
+                                            f"🎉 <b>Premium Ad Configured & Sent Successfully!</b>\n\n"
                                             f"📝 <b>Ad Type:</b> Text-Only Ad\n"
                                             f"⏰ <b>Interval:</b> {ad_object['interval_minutes']} minutes\n"
                                             f"🔗 <b>Button:</b> {ad_object['button_text']} ({ad_object['button_url']})\n\n"
+                                            f"🚀 <b>Immediate BroadCast:</b> Successfully sent to {success_count} channel(s) right now!\n\n"
                                             f"Your new ad has been loaded into the active scheduled queue!"
                                         )
                                         session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
@@ -482,7 +538,14 @@ def main():
                                         }, timeout=10)
                                         continue
                                     
-                                    user_state["temp_ad"]["caption"] = text
+                                    # Ensure caption stays bold and spoiler as requested
+                                    formatted_caption = text.strip()
+                                    if not (formatted_caption.startswith("<b><tg-spoiler>") or formatted_caption.startswith("<b><span class=\"tg-spoiler\">")):
+                                        if formatted_caption.startswith("<b>") and formatted_caption.endswith("</b>"):
+                                            formatted_caption = formatted_caption[3:-4]
+                                        formatted_caption = f"<b><tg-spoiler>{formatted_caption}</tg-spoiler></b>"
+                                        
+                                    user_state["temp_ad"]["caption"] = formatted_caption
                                     user_state["step"] = "awaiting_link"
                                     state_data["admin_states"][str(chat_id_private)] = user_state
                                     save_json_file(DEFAULT_STATE_FILE, state_data)
@@ -561,9 +624,16 @@ def main():
                                         if interval_min <= 0:
                                             raise ValueError()
                                     except ValueError:
+                                        reply_markup = {
+                                            "inline_keyboard": [
+                                                [{"text": "❌ Cancel Ad Creation", "callback_data": "admin_cancel"}]
+                                            ]
+                                        }
                                         session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
                                             "chat_id": chat_id_private,
-                                            "text": "⚠️ <b>Invalid input!</b> Please send a valid positive number for the minutes."
+                                            "text": "⚠️ <b>Invalid Input!</b> Please enter a valid positive number of minutes (e.g., 120 or 350).\n\n<i>Or cancel using the button below:</i>",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps(reply_markup)
                                         }, timeout=10)
                                         continue
 
@@ -627,6 +697,16 @@ def main():
                                     config_data.append(ad_object)
                                     save_json_file(DEFAULT_CONFIG_FILE, config_data)
                                     
+                                    # Instantly post the newly created ad to all active channels!
+                                    active_channels = state_data.get("active_channels", [chat_id])
+                                    if chat_id not in active_channels and str(chat_id) not in active_channels:
+                                        active_channels.insert(0, chat_id)
+                                    
+                                    success_count = 0
+                                    for active_chan in active_channels:
+                                        if post_ad_to_telegram(bot_token, active_chan, ad_object):
+                                            success_count += 1
+                                            
                                     # Reset state
                                     user_state["step"] = "None"
                                     user_state["temp_ad"] = {}
@@ -635,10 +715,11 @@ def main():
                                     
                                     # Success confirmation
                                     confirm_text = (
-                                        f"🎉 <b>Premium Ad Configured Successfully!</b>\n\n"
+                                        f"🎉 <b>Premium Ad Configured & Sent Successfully!</b>\n\n"
                                         f"🎬 <b>Ad Type:</b> {media_type.capitalize()}\n"
                                         f"⏰ <b>Interval:</b> {ad_object['interval_minutes']} minutes\n"
                                         f"🔗 <b>Button:</b> {ad_object['button_text']} ({ad_object['button_url']})\n\n"
+                                        f"🚀 <b>Immediate BroadCast:</b> Successfully sent to {success_count} channel(s) right now!\n\n"
                                         f"Your new media ad is fully synchronized and operational!"
                                     )
                                     session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
