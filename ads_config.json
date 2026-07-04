@@ -6,7 +6,7 @@
     "caption": "<b>🔥 Exclusive Leaks & News Portal! 🔥</b>\n\nJoin the ultimate channel to get immediate updates on upcoming features, tech news, and system insights.\n\n<i>✨ Click below to join the community now! ✨</i>",
     "button_text": "Join Channel 🚀",
     "button_url": "https://t.me/FeaturesticLeaks",
-    "interval_minutes": 60
+    "interval_minutes": 350
   },
   {
     "id": "animated_offer_2",
@@ -15,6 +15,6 @@
     "caption": "<b>🎉 Weekends Special Discount 🎉</b>\n\nDon't miss our premium services with a whopping <b>50% OFF</b> for a limited time.\n\n👇 Click the button below to claim your discount coupon!",
     "button_text": "Claim 50% Off Coupon 🎁",
     "button_url": "https://t.me/FeaturesticLeaks",
-    "interval_minutes": 120
+    "interval_minutes": 350
   }
 ]

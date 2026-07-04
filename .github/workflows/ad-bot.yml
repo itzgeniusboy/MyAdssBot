@@ -1,6 +1,10 @@
 name: Telegram Ad Poster
 
 on:
+  push:
+    branches:
+      - main
+      - master
   schedule:
     - cron: '*/10 * * * *'  # Runs every 10 minutes
   workflow_dispatch:        # Allows manual triggering from the Actions tab
