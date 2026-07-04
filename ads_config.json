@@ -1,19 +1,9 @@
 [
   {
-    "id": "promo_ad_1",
-    "media_type": "photo",
-    "file_id": "AgACAgIAAxkBAAIBYmb_placeholder_photo_file_id_example_abc123XYZ",
-    "caption": "<b>🔥 Exclusive Leaks & News Portal! 🔥</b>\n\nJoin the ultimate channel to get immediate updates on upcoming features, tech news, and system insights.\n\n<i>✨ Click below to join the community now! ✨</i>",
+    "id": "official_welcome_ad",
+    "media_type": "text",
+    "caption": "<b>🌟 Welcome to Featurestic Leaks & Updates! 🌟</b>\n\nJoin our official channel to stay ahead with real-time news, technology insights, and exclusive updates.\n\n✨ <i>Click the button below to join the journey!</i> ✨",
     "button_text": "Join Channel 🚀",
-    "button_url": "https://t.me/FeaturesticLeaks",
-    "interval_minutes": 350
-  },
-  {
-    "id": "animated_offer_2",
-    "media_type": "animation",
-    "file_id": "CgACAgQAAxkBAAIBZmb_placeholder_gif_file_id_example_abc123XYZ",
-    "caption": "<b>🎉 Weekends Special Discount 🎉</b>\n\nDon't miss our premium services with a whopping <b>50% OFF</b> for a limited time.\n\n👇 Click the button below to claim your discount coupon!",
-    "button_text": "Claim 50% Off Coupon 🎁",
     "button_url": "https://t.me/FeaturesticLeaks",
     "interval_minutes": 350
   }
