@@ -93,75 +93,13 @@ def post_ad_to_telegram(bot_token, chat_id, ad):
         print(f"Exception while posting ad {ad.get('id')}: {e}")
         return False
 
-def reply_to_private_messages(bot_token, channel_id):
-    """
-    Fetches pending updates and replies to users sending direct / private messages.
-    This provides immediate feedback that the bot is running successfully in the background!
-    """
-    print("Checking for pending private user messages...")
-    url_get_updates = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-    try:
-        response = requests.get(url_get_updates, params={"limit": 100, "allowed_updates": ["message"]}, timeout=10)
-        if response.status_code != 200:
-            return
-        res_json = response.json()
-        if not res_json.get("ok"):
-            return
-        
-        updates = res_json.get("result", [])
-        if not updates:
-            print("No pending user messages to reply to.")
-            return
-
-        last_update_id = None
-        for update in updates:
-            update_id = update.get("update_id")
-            last_update_id = update_id
-            
-            message = update.get("message")
-            if not message:
-                continue
-                
-            chat = message.get("chat", {})
-            chat_id = chat.get("id")
-            chat_type = chat.get("type")
-            text = message.get("text", "")
-            sender = message.get("from", {})
-            first_name = sender.get("first_name", "User")
-
-            # We only reply to private chats (direct messages to bot)
-            if chat_type == "private" and chat_id:
-                print(f"Replying to direct message from {first_name} (Chat ID: {chat_id})...")
-                url_send_message = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                
-                reply_text = (
-                    f"👋 <b>Namaste {first_name}! Aapka Ad Posting Bot Bilkul Chalu Hai!</b> 🚀\n\n"
-                    f"Mujhe aapka message mila: <i>\"{text}\"</i>\n\n"
-                    f"📢 <b>Target Channel:</b> {channel_id}\n"
-                    f"⏰ <b>Schedule Check:</b> Har 10 mins me GitHub Actions automatically check karta hai.\n"
-                    f"💻 <b>Status:</b> GitHub Actions par background run bilkul active aur 24x7 running hai!\n\n"
-                    f"Aap run details aur logs dekhne ke liye apne GitHub Repository ke <b>Actions</b> tab par ja sakte hain! ✨"
-                )
-                
-                payload = {
-                    "chat_id": chat_id,
-                    "text": reply_text,
-                    "parse_mode": "HTML"
-                }
-                requests.post(url_send_message, json=payload, timeout=10)
-
-        # Confirm/Clear updates so they are not processed in the next run
-        if last_update_id is not None:
-            requests.get(url_get_updates, params={"offset": last_update_id + 1}, timeout=5)
-            print("Successfully cleared processed Telegram updates.")
-
-    except Exception as e:
-        print(f"Error handling private replies: {e}")
-
 def main():
     # 1. Retrieve bot token and channel ID from Environment
     bot_token = os.environ.get("BOT_TOKEN")
     chat_id = os.environ.get("CHANNEL_ID")
+
+    # Run duration in minutes (defaults to 350 minutes / 5 hours 50 mins as requested)
+    run_duration_min = float(os.environ.get("RUN_DURATION_MINUTES", "350"))
 
     # Hardcoded Fallbacks (for testing or if not provided in Action)
     if not bot_token:
@@ -175,51 +113,113 @@ def main():
 
     print(f"Ad Posting Run Started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Target Channel: {chat_id}")
+    print(f"Loop duration limit set to {run_duration_min} minutes.")
 
-    # Process direct messages sent to the bot (instant reply proof of life!)
-    reply_to_private_messages(bot_token, chat_id)
+    start_time = time.time()
+    last_update_id = None
+    last_ad_check_time = 0  # Force first-time check immediately
 
-    # 2. Load configurations and current state
-    config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
-    state_data = load_json_file(DEFAULT_STATE_FILE, {})
+    # Initialize Telegram update offset to only reply to NEW messages
+    try:
+        init_res = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", params={"limit": 1}, timeout=10).json()
+        if init_res.get("ok") and init_res.get("result"):
+            last_update_id = init_res["result"][-1]["update_id"]
+            print(f"Initialized update offset to {last_update_id + 1} to ignore previous messages.")
+    except Exception as e:
+        print(f"Could not initialize update offset: {e}")
 
-    if not config_data:
-        print("No ads configured in ads_config.json. Exiting.")
-        return
+    # Main continuous polling loop
+    while True:
+        current_time = time.time()
+        elapsed_minutes = (current_time - start_time) / 60.0
 
-    print(f"Loaded {len(config_data)} ads from configuration.")
-    
-    current_time = time.time()
-    state_updated = False
+        if elapsed_minutes >= run_duration_min:
+            print(f"Reached configured run duration of {run_duration_min:.1f} minutes. Exiting gracefully to allow workflow restart...")
+            break
 
-    # 3. Process each ad
-    for ad in config_data:
-        ad_id = str(ad.get("id"))
-        interval_minutes = ad.get("interval_minutes", 120) # Default to 2 hours if not specified
+        # 1. Long-polling for private messages (Instant reply system)
+        try:
+            params = {"limit": 100, "allowed_updates": ["message"], "timeout": 15}
+            if last_update_id is not None:
+                params["offset"] = last_update_id + 1
+
+            url_get_updates = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+            response = requests.get(url_get_updates, params=params, timeout=20)
+            if response.status_code == 200:
+                res_json = response.json()
+                if res_json.get("ok"):
+                    updates = res_json.get("result", [])
+                    for update in updates:
+                        last_update_id = update.get("update_id")
+                        message = update.get("message")
+                        if not message:
+                            continue
+                        
+                        chat = message.get("chat", {})
+                        chat_id_private = chat.get("id")
+                        chat_type = chat.get("type")
+                        text = message.get("text", "")
+                        sender = message.get("from", {})
+                        first_name = sender.get("first_name", "User")
+
+                        if chat_type == "private" and chat_id_private:
+                            print(f"Received direct message from {first_name} (Chat ID: {chat_id_private}): {text}")
+                            url_send_message = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                            
+                            reply_text = (
+                                f"👋 <b>Namaste {first_name}! Aapka Ad Posting Bot Bilkul Active Hai!</b> 🚀\n\n"
+                                f"Mujhe aapka message mila: <i>\"{text}\"</i>\n\n"
+                                f"📢 <b>Target Channel:</b> {chat_id}\n"
+                                f"⏰ <b>Uptime:</b> Active run: {elapsed_minutes:.1f} mins (Total cycle: {run_duration_min:.0f} mins).\n"
+                                f"💻 <b>Status:</b> GitHub Actions par background continuous run bilkul live aur 24x7 active hai!\n\n"
+                                f"Bot completely automatic chal rha hai aur har cycle end hone par safety restart hota hai! ✨"
+                            )
+                            
+                            payload = {
+                                "chat_id": chat_id_private,
+                                "text": reply_text,
+                                "parse_mode": "HTML"
+                            }
+                            requests.post(url_send_message, json=payload, timeout=10)
+        except Exception as e:
+            print(f"Error checking Telegram updates: {e}")
+
+        # 2. Check scheduled ads (run every 15 seconds to check, but log only every 10 minutes or on posting)
+        should_log_ad_status = (current_time - last_ad_check_time) >= 600 or last_ad_check_time == 0
         
-        # Determine last post time
-        last_posted = state_data.get(ad_id, 0)
-        elapsed_minutes = (current_time - last_posted) / 60.0
+        config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
+        state_data = load_json_file(DEFAULT_STATE_FILE, {})
 
-        print(f"Ad '{ad_id}': Last posted: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {elapsed_minutes:.1f} min, Interval: {interval_minutes} min")
+        if config_data:
+            state_updated = False
+            if should_log_ad_status:
+                print(f"Checking scheduled ads... (Next log in 10 mins or on post)")
+                last_ad_check_time = current_time
 
-        if elapsed_minutes >= interval_minutes:
-            # Try posting
-            success = post_ad_to_telegram(bot_token, chat_id, ad)
-            if success:
-                # Update state timestamp
-                state_data[ad_id] = current_time
-                state_updated = True
-        else:
-            minutes_left = interval_minutes - elapsed_minutes
-            print(f"Ad '{ad_id}' skipped. {minutes_left:.1f} minutes remaining before next post.")
+            for ad in config_data:
+                ad_id = str(ad.get("id"))
+                interval_minutes = ad.get("interval_minutes", 120)
+                
+                last_posted = state_data.get(ad_id, 0)
+                ad_elapsed_minutes = (time.time() - last_posted) / 60.0
 
-    # 4. Save state if any ads were successfully posted
-    if state_updated:
-        print("Saving updated state back to state.json...")
-        save_json_file(DEFAULT_STATE_FILE, state_data)
-    else:
-        print("No updates to state.json.")
+                if should_log_ad_status:
+                    print(f" - Ad '{ad_id}': Interval: {interval_minutes}m, Last posted: {time.strftime('%M:%S', time.localtime(last_posted)) if last_posted else 'Never'}, Elapsed: {ad_elapsed_minutes:.1f}m")
+
+                if ad_elapsed_minutes >= interval_minutes:
+                    # Try posting
+                    success = post_ad_to_telegram(bot_token, chat_id, ad)
+                    if success:
+                        state_data[ad_id] = time.time()
+                        state_updated = True
+                        last_ad_check_time = 0 # Force immediate refresh of logging status on next loop
+            
+            if state_updated:
+                print("Saving updated state back to state.json...")
+                save_json_file(DEFAULT_STATE_FILE, state_data)
+
+        # Brief pause to keep CPU usage low
+        time.sleep(3)
 
     print("Ad Posting Run Completed.")
 

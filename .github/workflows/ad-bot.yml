@@ -6,11 +6,17 @@ on:
       - main
       - master
   schedule:
-    - cron: '*/10 * * * *'  # Runs every 10 minutes
+    - cron: '*/10 * * * *'  # Runs every 10 minutes as a fallback safety net
   workflow_dispatch:        # Allows manual triggering from the Actions tab
+
+# Prevent multiple workflow runs from running at the same time and conflicting
+concurrency:
+  group: telegram-ad-bot
+  cancel-in-progress: true
 
 permissions:
   contents: write           # Required to commit state.json back to the repository
+  actions: write            # Required to dispatch the next run automatically
 
 jobs:
   post-ads:
@@ -33,10 +39,11 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run Ad Poster
+      - name: Run Ad Poster (Continuous Loop Mode)
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          RUN_DURATION_MINUTES: "350"  # Run for 5 hours and 50 minutes, then restart gracefully
         run: |
           python post_ads.py
 
@@ -52,3 +59,16 @@ jobs:
           else
             echo "No changes to state.json to commit."
           fi
+
+      - name: Trigger next run (Continuous 24/7 loop)
+        if: always()        # Ensures the next loop starts even if this one had errors
+        run: |
+          echo "Triggering next 5h 50m loop cycle..."
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/ad-bot.yml/dispatches \
+            -d '{"ref":"${{ github.ref }}"}' || echo "Self-dispatch not permitted or failed. Standard Cron fallback will trigger."
+
