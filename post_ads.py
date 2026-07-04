@@ -46,14 +46,21 @@ def post_ad_to_telegram(bot_token, chat_id, ad):
     button_text = ad.get("button_text")
     button_url = ad.get("button_url")
 
-    # Force formatting to be Bold and Spoiler as requested:
-    # "Ye hmara bold and spoiler ma he rhnaa chahea joo bhii Caption hoo"
+    # Force formatting to be Bold and Quote (blockquote) as requested:
+    # "Adss se Spoiler htaao or uski jgaa Quote rakhoo"
     if caption:
-        caption_stripped = caption.strip()
-        if not (caption_stripped.startswith("<b><tg-spoiler>") or caption_stripped.startswith("<b><span class=\"tg-spoiler\">")):
-            if caption_stripped.startswith("<b>") and caption_stripped.endswith("</b>"):
-                caption_stripped = caption_stripped[3:-4]
-            caption = f"<b><tg-spoiler>{caption_stripped}</tg-spoiler></b>"
+        import re
+        clean = caption.strip()
+        while clean.startswith("<b>") and clean.endswith("</b>"):
+            clean = clean[3:-4].strip()
+        while clean.startswith("<strong>") and clean.endswith("</strong>"):
+            clean = clean[8:-9].strip()
+        
+        clean = re.sub(r'</?tg-spoiler>', '', clean)
+        clean = re.sub(r'<span\s+class=["\']tg-spoiler["\']>', '', clean)
+        clean = re.sub(r'</?blockquote>', '', clean)
+        clean = re.sub(r'</span>', '', clean)
+        caption = f"<blockquote><b>{clean.strip()}</b></blockquote>"
 
     # Construct the inline keyboard button if specified
     reply_markup = {}
@@ -538,12 +545,19 @@ def main():
                                         }, timeout=10)
                                         continue
                                     
-                                    # Ensure caption stays bold and spoiler as requested
-                                    formatted_caption = text.strip()
-                                    if not (formatted_caption.startswith("<b><tg-spoiler>") or formatted_caption.startswith("<b><span class=\"tg-spoiler\">")):
-                                        if formatted_caption.startswith("<b>") and formatted_caption.endswith("</b>"):
-                                            formatted_caption = formatted_caption[3:-4]
-                                        formatted_caption = f"<b><tg-spoiler>{formatted_caption}</tg-spoiler></b>"
+                                    # Ensure caption stays bold and quote (blockquote) as requested
+                                    import re
+                                    clean = text.strip()
+                                    while clean.startswith("<b>") and clean.endswith("</b>"):
+                                        clean = clean[3:-4].strip()
+                                    while clean.startswith("<strong>") and clean.endswith("</strong>"):
+                                        clean = clean[8:-9].strip()
+                                    
+                                    clean = re.sub(r'</?tg-spoiler>', '', clean)
+                                    clean = re.sub(r'<span\s+class=["\']tg-spoiler["\']>', '', clean)
+                                    clean = re.sub(r'</?blockquote>', '', clean)
+                                    clean = re.sub(r'</span>', '', clean)
+                                    formatted_caption = f"<blockquote><b>{clean.strip()}</b></blockquote>"
                                         
                                     user_state["temp_ad"]["caption"] = formatted_caption
                                     user_state["step"] = "awaiting_link"

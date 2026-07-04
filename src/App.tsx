@@ -38,7 +38,13 @@ interface Ad {
 }
 
 interface StateData {
-  [adId: string]: number; // unix timestamp in seconds
+  active_channels?: (string | number)[];
+  channel_states?: {
+    [channelId: string]: {
+      [adId: string]: number;
+    };
+  };
+  [key: string]: any;
 }
 
 interface ScannedMedia {
@@ -58,6 +64,7 @@ export default function App() {
   const [ads, setAds] = useState<Ad[]>([]);
   const [stateData, setStateData] = useState<StateData>({});
   const [loading, setLoading] = useState(true);
+  const [newChannelInput, setNewChannelInput] = useState("");
 
   // Bot Credentials (local state initialized with default values from user specs)
   const [botToken, setBotToken] = useState("8918032442:AAG3p2wJ3Bm8ibtNCCs_4B8momgk8GAEGkA");
@@ -414,6 +421,44 @@ jobs:
     } catch (e) {
       console.error("Failed to save config to server:", e);
       alert("Failed to save changes to server file.");
+    }
+  };
+
+  // Save active channels list to the server
+  const saveActiveChannelsToServer = async (updatedChannels: (string | number)[]) => {
+    try {
+      const response = await fetch("/api/active-channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channels: updatedChannels }),
+      });
+      const data = await response.json();
+      if (data.state) {
+        setStateData(data.state);
+      }
+    } catch (e) {
+      console.error("Failed to save active channels:", e);
+    }
+  };
+
+  const handleAddChannel = () => {
+    if (!newChannelInput.trim()) return;
+    const currentChannels = stateData.active_channels || [];
+    const normalizedInput = newChannelInput.trim();
+    if (currentChannels.includes(normalizedInput)) {
+      alert("Channel is already in the list!");
+      return;
+    }
+    const updated = [...currentChannels, normalizedInput];
+    saveActiveChannelsToServer(updated);
+    setNewChannelInput("");
+  };
+
+  const handleRemoveChannel = (channelToRemove: string | number) => {
+    if (confirm(`Remove channel ${channelToRemove} from the active list?`)) {
+      const currentChannels = stateData.active_channels || [];
+      const updated = currentChannels.filter(c => c !== channelToRemove);
+      saveActiveChannelsToServer(updated);
     }
   };
 
@@ -894,6 +939,78 @@ jobs:
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Active Channels Management */}
+            <div className="bg-[#161b22] border border-gray-800 rounded-xl p-5 shadow-lg">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <Bot className="w-4 h-4 text-teal-400" />
+                    Bot Administered Channels
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    The bot will automatically broadcast ads to all listed channels.
+                  </p>
+                </div>
+                
+                {/* Manual Add Input */}
+                <div className="flex items-center gap-2 max-w-sm w-full sm:w-auto">
+                  <input
+                    type="text"
+                    value={newChannelInput}
+                    onChange={(e) => setNewChannelInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleAddChannel()}
+                    placeholder="e.g. @MyNewChannel or -10012345"
+                    className="flex-1 sm:w-48 px-2.5 py-1.5 bg-black border border-gray-800 rounded-lg text-xs font-mono text-white placeholder-gray-500 focus:outline-none focus:border-teal-500 transition-colors"
+                  />
+                  <button
+                    onClick={handleAddChannel}
+                    className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-black font-semibold rounded-lg text-xs flex items-center justify-center gap-1 shrink-0 cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Channels List */}
+              <div className="flex flex-wrap gap-2">
+                {/* Primary Channel */}
+                <div className="bg-teal-500/10 border border-teal-500/25 text-teal-300 px-3 py-1.5 rounded-full text-xs font-mono flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-ping" />
+                  <span>{channelId} (Primary)</span>
+                </div>
+
+                {/* Other Dynamically Registered Channels */}
+                {stateData.active_channels && stateData.active_channels.map((chan) => {
+                  // Skip displaying primary channel if it's already in active_channels to avoid duplication
+                  if (String(chan) === String(channelId)) return null;
+
+                  return (
+                    <div
+                      key={chan}
+                      className="bg-gray-800/60 border border-gray-700 hover:border-gray-600 text-gray-300 px-3 py-1.5 rounded-full text-xs font-mono flex items-center gap-2 group transition-colors"
+                    >
+                      <span>{chan}</span>
+                      <button
+                        onClick={() => handleRemoveChannel(chan)}
+                        className="text-gray-500 hover:text-rose-400 font-bold transition-colors text-xs"
+                        title="Remove Channel"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {/* Help message if no other channels are active */}
+                {(!stateData.active_channels || stateData.active_channels.filter(c => String(c) !== String(channelId)).length === 0) && (
+                  <div className="text-xs text-gray-500 italic flex items-center gap-1.5 mt-1">
+                    <Info className="w-3.5 h-3.5" />
+                    <span>No other active channels linked yet. Simply add your bot as an admin to any other channel, and it will register automatically.</span>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Main Ads Grid */}
             {loading ? (

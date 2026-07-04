@@ -42,6 +42,28 @@ async function startServer() {
     }
   };
 
+  // Helper to force bold and blockquote formatting
+  const formatCaptionAsQuoteAndBold = (caption: string): string => {
+    if (!caption) return "";
+    let clean = caption.trim();
+    
+    // Strip outer <b> and </b>
+    while (clean.startsWith("<b>") && clean.endsWith("</b>")) {
+      clean = clean.substring(3, clean.length - 4).trim();
+    }
+    while (clean.startsWith("<strong>") && clean.endsWith("</strong>")) {
+      clean = clean.substring(8, clean.length - 9).trim();
+    }
+    
+    // Remove spoiler and blockquote tags
+    clean = clean.replace(/<\/?tg-spoiler>/g, "");
+    clean = clean.replace(/<span\s+class=["']tg-spoiler["']>/g, "");
+    clean = clean.replace(/<\/?blockquote>/g, "");
+    clean = clean.replace(/<\/span>/g, "");
+    
+    return `<blockquote><b>${clean.trim()}</b></blockquote>`;
+  };
+
   // ==========================================
   // API ENDPOINTS
   // ==========================================
@@ -64,6 +86,24 @@ async function startServer() {
       res.json({ message: "Configuration saved successfully", config: newConfig });
     } else {
       res.status(500).json({ error: "Failed to write configuration file." });
+    }
+  });
+
+  // 2b. Save/Update active channels list in state.json
+  app.post("/api/active-channels", (req, res) => {
+    const { channels } = req.body;
+    if (!Array.isArray(channels)) {
+      return res.status(400).json({ error: "Channels must be an array." });
+    }
+    
+    const state = loadJsonFile(STATE_FILE, {});
+    state.active_channels = channels;
+    const success = saveJsonFile(STATE_FILE, state);
+    
+    if (success) {
+      res.json({ message: "Active channels updated successfully", state });
+    } else {
+      res.status(500).json({ error: "Failed to write state file." });
     }
   });
 
@@ -166,39 +206,80 @@ async function startServer() {
         inline_keyboard: [[{ text: button_text, url: button_url }]]
       } : null;
 
-      let url = `https://api.telegram.org/bot${token}/sendPhoto`;
-      let payload: any = {
-        chat_id: channel,
-        photo: file_id,
-        caption: caption || "",
-        parse_mode: "HTML",
-      };
+      const formattedCaption = formatCaptionAsQuoteAndBold(caption || "");
+      
+      // Load all active channels where the bot is admin
+      const state = loadJsonFile(STATE_FILE, {});
+      let activeChannels = state.active_channels || [];
+      if (!Array.isArray(activeChannels)) {
+        activeChannels = [];
+      }
+      
+      // Ensure the user-inputted primary channel is also included in the broadcast
+      const channelsToPost = [...activeChannels];
+      const primaryStr = String(channel);
+      const primaryNum = Number(channel);
+      const hasPrimary = channelsToPost.some(c => String(c) === primaryStr || (typeof c === "number" && c === primaryNum));
+      if (!hasPrimary) {
+        channelsToPost.unshift(channel);
+      }
 
-      if (media_type === "animation") {
-        url = `https://api.telegram.org/bot${token}/sendAnimation`;
-        payload = {
-          chat_id: channel,
-          animation: file_id,
-          caption: caption || "",
+      const results = [];
+      let successCount = 0;
+      let lastError = "";
+
+      for (const chan of channelsToPost) {
+        let url = `https://api.telegram.org/bot${token}/sendPhoto`;
+        let payload: any = {
+          chat_id: chan,
+          photo: file_id,
+          caption: formattedCaption,
           parse_mode: "HTML",
         };
+
+        if (media_type === "animation") {
+          url = `https://api.telegram.org/bot${token}/sendAnimation`;
+          payload = {
+            chat_id: chan,
+            animation: file_id,
+            caption: formattedCaption,
+            parse_mode: "HTML",
+          };
+        }
+
+        if (reply_markup) {
+          payload.reply_markup = JSON.stringify(reply_markup);
+        }
+
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          const data: any = await response.json();
+          if (data.ok) {
+            successCount++;
+            results.push({ channel: chan, success: true });
+          } else {
+            results.push({ channel: chan, success: false, error: data.description });
+            lastError = data.description;
+          }
+        } catch (chanErr: any) {
+          results.push({ channel: chan, success: false, error: chanErr.message });
+          lastError = chanErr.message;
+        }
       }
 
-      if (reply_markup) {
-        payload.reply_markup = JSON.stringify(reply_markup);
-      }
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data: any = await response.json();
-      if (data.ok) {
-        res.json({ ok: true, message: "Ad posted successfully for testing!", telegram_response: data.result });
+      if (successCount > 0) {
+        res.json({ 
+          ok: true, 
+          message: `Ad posted successfully to ${successCount}/${channelsToPost.length} channel(s)!`, 
+          results 
+        });
       } else {
-        res.status(400).json({ error: data.description || "Telegram rejected the post request." });
+        res.status(400).json({ error: lastError || "Telegram rejected the post request for all channels.", results });
       }
     } catch (e: any) {
       console.error("Error test posting ad:", e);
@@ -219,66 +300,100 @@ async function startServer() {
     const logs: string[] = [];
     let stateUpdated = false;
 
+    // Load active channels
+    let activeChannels = state.active_channels || [];
+    if (!Array.isArray(activeChannels)) {
+      activeChannels = [];
+    }
+    
+    // Ensure primary channel is in the active list
+    const channelsToPost = [...activeChannels];
+    const primaryStr = String(channel);
+    const primaryNum = Number(channel);
+    const hasPrimary = channelsToPost.some(c => String(c) === primaryStr || (typeof c === "number" && c === primaryNum));
+    if (!hasPrimary) {
+      channelsToPost.unshift(channel);
+    }
+
+    // Ensure channel_states dictionary exists
+    if (!state.channel_states || typeof state.channel_states !== "object") {
+      state.channel_states = {};
+    }
+
     logs.push(`Scheduler step triggered at ${new Date().toLocaleString()}`);
-    logs.push(`Loaded ${config.length} configured ads.`);
+    logs.push(`Loaded ${config.length} configured ads. Checking for ${channelsToPost.length} channel(s)...`);
 
-    for (const ad of config) {
-      const adId = ad.id;
-      const intervalMinutes = ad.interval_minutes || 120;
-      const lastPosted = state[adId] || 0;
-      const elapsedMinutes = (currentTime - lastPosted) / 60.0;
+    for (const chan of channelsToPost) {
+      const chanStr = String(chan);
+      if (!state.channel_states[chanStr] || typeof state.channel_states[chanStr] !== "object") {
+        state.channel_states[chanStr] = {};
+      }
+      const chanState = state.channel_states[chanStr];
 
-      logs.push(`Ad '${adId}': Elapsed: ${elapsedMinutes.toFixed(1)} mins, Required Interval: ${intervalMinutes} mins`);
+      logs.push(`--- Checking Channel: ${chanStr} ---`);
 
-      if (elapsedMinutes >= intervalMinutes) {
-        logs.push(`Ad '${adId}' is eligible. Posting...`);
-        try {
-          const reply_markup = ad.button_text && ad.button_url ? {
-            inline_keyboard: [[{ text: ad.button_text, url: ad.button_url }]]
-          } : null;
+      for (const ad of config) {
+        const adId = ad.id;
+        const intervalMinutes = ad.interval_minutes || 120;
+        
+        // Fallback to general timestamp if channel-specific state isn't populated yet
+        const lastPosted = chanState[adId] || state[adId] || 0;
+        const elapsedMinutes = (currentTime - lastPosted) / 60.0;
 
-          let url = `https://api.telegram.org/bot${token}/sendPhoto`;
-          let payload: any = {
-            chat_id: channel,
-            photo: ad.file_id,
-            caption: ad.caption || "",
-            parse_mode: "HTML",
-          };
+        logs.push(`Ad '${adId}': Elapsed: ${elapsedMinutes.toFixed(1)} mins, Required Interval: ${intervalMinutes} mins`);
 
-          if (ad.media_type === "animation") {
-            url = `https://api.telegram.org/bot${token}/sendAnimation`;
-            payload = {
-              chat_id: channel,
-              animation: ad.file_id,
-              caption: ad.caption || "",
+        if (elapsedMinutes >= intervalMinutes) {
+          logs.push(`Ad '${adId}' is eligible for ${chanStr}. Posting...`);
+          try {
+            const reply_markup = ad.button_text && ad.button_url ? {
+              inline_keyboard: [[{ text: ad.button_text, url: ad.button_url }]]
+            } : null;
+
+            const formattedCaption = formatCaptionAsQuoteAndBold(ad.caption || "");
+            let url = `https://api.telegram.org/bot${token}/sendPhoto`;
+            let payload: any = {
+              chat_id: chan,
+              photo: ad.file_id,
+              caption: formattedCaption,
               parse_mode: "HTML",
             };
-          }
 
-          if (reply_markup) {
-            payload.reply_markup = JSON.stringify(reply_markup);
-          }
+            if (ad.media_type === "animation") {
+              url = `https://api.telegram.org/bot${token}/sendAnimation`;
+              payload = {
+                chat_id: chan,
+                animation: ad.file_id,
+                caption: formattedCaption,
+                parse_mode: "HTML",
+              };
+            }
 
-          const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
+            if (reply_markup) {
+              payload.reply_markup = JSON.stringify(reply_markup);
+            }
 
-          const data: any = await response.json();
-          if (data.ok) {
-            state[adId] = currentTime;
-            stateUpdated = true;
-            logs.push(`✅ Ad '${adId}' posted successfully!`);
-          } else {
-            logs.push(`❌ Ad '${adId}' failed: ${data.description}`);
+            const response = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+
+            const data: any = await response.json();
+            if (data.ok) {
+              chanState[adId] = currentTime;
+              state[adId] = currentTime; // update fallback as well
+              stateUpdated = true;
+              logs.push(`✅ Ad '${adId}' posted successfully to ${chanStr}!`);
+            } else {
+              logs.push(`❌ Ad '${adId}' failed for ${chanStr}: ${data.description}`);
+            }
+          } catch (e: any) {
+            logs.push(`❌ Exception during Ad '${adId}' for ${chanStr}: ${e.message}`);
           }
-        } catch (e: any) {
-          logs.push(`❌ Exception during Ad '${adId}': ${e.message}`);
+        } else {
+          const remaining = intervalMinutes - elapsedMinutes;
+          logs.push(`Skipping ad '${adId}' on ${chanStr} (${remaining.toFixed(1)} mins left)`);
         }
-      } else {
-        const remaining = intervalMinutes - elapsedMinutes;
-        logs.push(`Skipping ad '${adId}' (${remaining.toFixed(1)} mins left)`);
       }
     }
 
