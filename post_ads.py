@@ -136,7 +136,10 @@ def show_admin_panel(session, bot_token, chat_id, num_channels, num_ads):
                 {"text": "📋 View & Delete Ads", "callback_data": "admin_list"}
             ],
             [
-                {"text": "🔄 Refresh Stats", "callback_data": "admin_refresh"},
+                {"text": "📢 Manage Channels", "callback_data": "admin_channels"},
+                {"text": "🔄 Refresh Stats", "callback_data": "admin_refresh"}
+            ],
+            [
                 {"text": "❌ Close Panel", "callback_data": "admin_close"}
             ]
         ]
@@ -422,6 +425,82 @@ def main():
                                     num_channels = len(state_data.get("active_channels", [chat_id]))
                                     show_admin_panel(session, bot_token, chat_id_private, num_channels, len(config_data))
 
+                                elif cq_data == "admin_channels":
+                                    current_chans = state_data.get("active_channels", [chat_id])
+                                    if chat_id not in current_chans and str(chat_id) not in current_chans:
+                                        current_chans.insert(0, chat_id)
+                                    
+                                    text_list = "📢 <b>Active Ad-Posting Channels Network:</b>\n\n"
+                                    text_list += "The bot will automatically post scheduled ads to all channels listed below:\n\n"
+                                    
+                                    keyboard = []
+                                    for i, c in enumerate(current_chans):
+                                        is_primary = str(c) == str(chat_id)
+                                        tag = "👑 Primary" if is_primary else "Channel"
+                                        text_list += f"• <code>{c}</code> (<b>{tag}</b>)\n"
+                                        
+                                        # Only show a delete button for non-primary channels
+                                        if not is_primary:
+                                            keyboard.append([
+                                                {"text": f"🗑️ Remove {c}", "callback_data": f"admin_remchan_{c}"}
+                                            ])
+                                    
+                                    keyboard.append([{"text": "➕ Add Channel Manually", "callback_data": "admin_addchan_prompt"}])
+                                    keyboard.append([{"text": "⬅️ Back to Admin Console", "callback_data": "admin_refresh"}])
+                                    
+                                    reply_markup = {"inline_keyboard": keyboard}
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": text_list,
+                                        "parse_mode": "HTML",
+                                        "reply_markup": json.dumps(reply_markup)
+                                    }, timeout=10)
+
+                                elif cq_data == "admin_addchan_prompt":
+                                    user_state["step"] = "awaiting_add_channel"
+                                    state_data["admin_states"][str(chat_id_private)] = user_state
+                                    save_json_file(DEFAULT_STATE_FILE, state_data)
+                                    
+                                    prompt_text = (
+                                        "📢 <b>Add Channel Manually</b>\n\n"
+                                        "Please type or paste the channel's public username (e.g., <code>@MyNewChannel</code>) or private channel ID (e.g., <code>-1001234567890</code>).\n\n"
+                                        "<i>Make sure the bot is already an administrator in that channel with 'Post Messages' permission!</i>"
+                                    )
+                                    reply_markup = {
+                                        "inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "admin_channels"}]]
+                                    }
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": prompt_text,
+                                        "parse_mode": "HTML",
+                                        "reply_markup": json.dumps(reply_markup)
+                                    }, timeout=10)
+
+                                elif cq_data.startswith("admin_remchan_"):
+                                    to_rem = cq_data.replace("admin_remchan_", "")
+                                    current_chans = state_data.get("active_channels", [chat_id])
+                                    
+                                    matched_item = None
+                                    for item in current_chans:
+                                        if str(item) == str(to_rem):
+                                            matched_item = item
+                                            break
+                                            
+                                    if matched_item is not None:
+                                        current_chans.remove(matched_item)
+                                        state_data["active_channels"] = current_chans
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        confirm_text = f"✅ <b>Successfully removed channel:</b> <code>{to_rem}</code> from the ad queue."
+                                    else:
+                                        confirm_text = f"⚠️ Channel <code>{to_rem}</code> was not found in the active list."
+                                        
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": confirm_text,
+                                        "parse_mode": "HTML",
+                                        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back to Channels", "callback_data": "admin_channels"}]]})
+                                    }, timeout=10)
+
                                 elif cq_data == "skip_media":
                                     if user_state["step"] == "awaiting_media":
                                         temp_ad = user_state.get("temp_ad", {})
@@ -535,6 +614,42 @@ def main():
                                         "text": "❌ Ad creation cancelled. Main menu loaded.",
                                         "reply_markup": json.dumps({"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "admin_refresh"}]]})
                                     }, timeout=10)
+                                    continue
+
+                                if current_step == "awaiting_add_channel":
+                                    if not text:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": "⚠️ Please send a valid channel username (e.g., @MyNewChannel) or ID."
+                                        }, timeout=10)
+                                        continue
+                                    
+                                    new_chan = text.strip()
+                                    if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                                        state_data["active_channels"] = [chat_id]
+                                    
+                                    if new_chan not in state_data["active_channels"] and str(new_chan) not in state_data["active_channels"]:
+                                        state_data["active_channels"].append(new_chan)
+                                        user_state["step"] = "None"
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Successfully added channel:</b> <code>{new_chan}</code> to active posting list!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        user_state["step"] = "None"
+                                        state_data["admin_states"][str(chat_id_private)] = user_state
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"ℹ️ Channel <code>{new_chan}</code> is already in active posting list.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
                                     continue
 
                                 if current_step == "awaiting_text":
@@ -744,6 +859,34 @@ def main():
                                     }, timeout=10)
                                 continue
 
+                            # --- Check for forwarded message from channel to register it ---
+                            forward_from_chat = message.get("forward_from_chat")
+                            if is_admin and forward_from_chat and forward_from_chat.get("type") in ["channel", "supergroup"]:
+                                chan_id = forward_from_chat.get("id")
+                                chan_title = forward_from_chat.get("title", "Channel")
+                                chan_username = forward_from_chat.get("username")
+                                
+                                chan_identifier = f"@{chan_username}" if chan_username else chan_id
+                                
+                                if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                                    state_data["active_channels"] = [chat_id]
+                                
+                                if chan_identifier not in state_data["active_channels"] and str(chan_id) not in state_data["active_channels"] and str(chan_identifier) not in state_data["active_channels"]:
+                                    state_data["active_channels"].append(chan_identifier)
+                                    save_json_file(DEFAULT_STATE_FILE, state_data)
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": f"🎉 <b>Channel Registered Successfully!</b>\n\n📢 <b>Name:</b> {chan_title}\n🆔 <b>ID/User:</b> <code>{chan_identifier}</code>\n\nThis channel has been added to your active ad-posting network and will receive automated ads!",
+                                        "parse_mode": "HTML"
+                                    }, timeout=10)
+                                else:
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": f"ℹ️ <b>Channel Already Registered!</b>\n\n📢 <b>Name:</b> {chan_title}\n🆔 <b>ID/User:</b> <code>{chan_identifier}</code> is already in your active list.",
+                                        "parse_mode": "HTML"
+                                    }, timeout=10)
+                                continue
+
                             # --- Normal Non-state commands (/start and /admin) ---
                             if text == "/start":
                                 reply_text = (
@@ -754,6 +897,11 @@ def main():
                                     f"2️⃣ Apna desired channel select karein aur bot ko add karein.\n"
                                     f"3️⃣ Bot ko <b>Admin permissions</b> (Post, Edit, and Delete Messages) dein.\n"
                                     f"4️⃣ Bus! Bot automatically scheduled intervals par configured ads post karna shuru kar dega.\n\n"
+                                    f"🛠️ <b>Admin Commands:</b>\n"
+                                    f"• <code>/addchannel @channelname</code> - Add channel manually\n"
+                                    f"• <code>/removechannel @channelname</code> - Remove channel\n"
+                                    f"• <code>/listchannels</code> - List all active channels\n"
+                                    f"• <i>Forward any post from your channel to this bot to register it automatically!</i>\n\n"
                                     f"💻 <b>System Status:</b> Online 🟢\n"
                                     f"⏰ <b>Uptime Cycle:</b> Continuous loops via GitHub Actions."
                                 )
@@ -764,9 +912,16 @@ def main():
                                     [{"text": "📢 Add Me to Your Channel (Run Ads)", "url": add_to_channel_url}]
                                 ]
                                 
-                                # If sender is admin, show Admin Panel button too
+                                # If sender is admin, show Admin Panel and other shortcuts too
                                 if is_admin:
-                                    inline_kb.append([{"text": "🛠️ Admin Control Panel", "callback_data": "admin_refresh"}])
+                                    inline_kb.append([
+                                        {"text": "🛠️ Admin Control Panel", "callback_data": "admin_refresh"},
+                                        {"text": "📢 Manage Channels", "callback_data": "admin_channels"}
+                                    ])
+                                    inline_kb.append([
+                                        {"text": "➕ Create Ad", "callback_data": "admin_create"},
+                                        {"text": "📋 View Ads", "callback_data": "admin_list"}
+                                    ])
 
                                 reply_markup = {"inline_keyboard": inline_kb}
                                 
@@ -776,6 +931,102 @@ def main():
                                     "parse_mode": "HTML",
                                     "reply_markup": json.dumps(reply_markup)
                                 }, timeout=10)
+
+                            elif is_admin and text.startswith("/addchannel"):
+                                parts = text.split(maxsplit=1)
+                                if len(parts) < 2:
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": "⚠️ <b>Usage:</b> <code>/addchannel @channel_username</code> or <code>/addchannel -100123456789</code>",
+                                        "parse_mode": "HTML",
+                                        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "➕ Add Channel Manually", "callback_data": "admin_addchan_prompt"}]]})
+                                    }, timeout=10)
+                                else:
+                                    new_chan = parts[1].strip()
+                                    if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                                        state_data["active_channels"] = [chat_id]
+                                    
+                                    if new_chan not in state_data["active_channels"] and str(new_chan) not in state_data["active_channels"]:
+                                        state_data["active_channels"].append(new_chan)
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Successfully added channel:</b> <code>{new_chan}</code> to active posting list!",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"ℹ️ Channel <code>{new_chan}</code> is already in active posting list.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
+                                continue
+
+                            elif is_admin and text.startswith("/removechannel"):
+                                parts = text.split(maxsplit=1)
+                                if len(parts) < 2:
+                                    session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                        "chat_id": chat_id_private,
+                                        "text": "⚠️ <b>Usage:</b> <code>/removechannel @channel_username</code> or <code>/removechannel -100123456789</code>",
+                                        "parse_mode": "HTML",
+                                        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "🗑️ Manage Channels", "callback_data": "admin_channels"}]]})
+                                    }, timeout=10)
+                                else:
+                                    to_rem = parts[1].strip()
+                                    if "active_channels" not in state_data or not isinstance(state_data["active_channels"], list):
+                                        state_data["active_channels"] = [chat_id]
+                                    
+                                    current_chans = state_data["active_channels"]
+                                    # Handle string or int matching
+                                    matched_item = None
+                                    for item in current_chans:
+                                        if str(item) == str(to_rem):
+                                            matched_item = item
+                                            break
+                                            
+                                    if matched_item is not None:
+                                        current_chans.remove(matched_item)
+                                        state_data["active_channels"] = current_chans
+                                        save_json_file(DEFAULT_STATE_FILE, state_data)
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"✅ <b>Successfully removed channel:</b> <code>{to_rem}</code>.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
+                                    else:
+                                        session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                            "chat_id": chat_id_private,
+                                            "text": f"⚠️ Channel <code>{to_rem}</code> not found in active list.",
+                                            "parse_mode": "HTML",
+                                            "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_channels"}]]})
+                                        }, timeout=10)
+                                continue
+
+                            elif is_admin and text == "/listchannels":
+                                current_chans = state_data.get("active_channels", [chat_id])
+                                if chat_id not in current_chans and str(chat_id) not in current_chans:
+                                    current_chans.insert(0, chat_id)
+                                
+                                chan_list_text = "📢 <b>Active Ad-Posting Channels Network:</b>\n\n"
+                                for i, c in enumerate(current_chans, 1):
+                                    is_primary = " (Primary)" if str(c) == str(chat_id) else ""
+                                    chan_list_text += f"{i}. <code>{c}</code>{is_primary}\n"
+                                
+                                inline_kb = [
+                                    [{"text": "➕ Add Channel Manually", "callback_data": "admin_addchan_prompt"}],
+                                    [{"text": "📢 Manage Channels", "callback_data": "admin_channels"}],
+                                    [{"text": "⬅️ Back to Admin Console", "callback_data": "admin_refresh"}]
+                                ]
+                                session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
+                                    "chat_id": chat_id_private,
+                                    "text": chan_list_text,
+                                    "parse_mode": "HTML",
+                                    "reply_markup": json.dumps({"inline_keyboard": inline_kb})
+                                }, timeout=10)
+                                continue
 
                             elif text == "/admin":
                                 if is_admin:
