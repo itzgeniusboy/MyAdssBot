@@ -93,6 +93,71 @@ def post_ad_to_telegram(bot_token, chat_id, ad):
         print(f"Exception while posting ad {ad.get('id')}: {e}")
         return False
 
+def reply_to_private_messages(bot_token, channel_id):
+    """
+    Fetches pending updates and replies to users sending direct / private messages.
+    This provides immediate feedback that the bot is running successfully in the background!
+    """
+    print("Checking for pending private user messages...")
+    url_get_updates = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    try:
+        response = requests.get(url_get_updates, params={"limit": 100, "allowed_updates": ["message"]}, timeout=10)
+        if response.status_code != 200:
+            return
+        res_json = response.json()
+        if not res_json.get("ok"):
+            return
+        
+        updates = res_json.get("result", [])
+        if not updates:
+            print("No pending user messages to reply to.")
+            return
+
+        last_update_id = None
+        for update in updates:
+            update_id = update.get("update_id")
+            last_update_id = update_id
+            
+            message = update.get("message")
+            if not message:
+                continue
+                
+            chat = message.get("chat", {})
+            chat_id = chat.get("id")
+            chat_type = chat.get("type")
+            text = message.get("text", "")
+            sender = message.get("from", {})
+            first_name = sender.get("first_name", "User")
+
+            # We only reply to private chats (direct messages to bot)
+            if chat_type == "private" and chat_id:
+                print(f"Replying to direct message from {first_name} (Chat ID: {chat_id})...")
+                url_send_message = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                
+                reply_text = (
+                    f"👋 <b>Namaste {first_name}! Aapka Ad Posting Bot Bilkul Chalu Hai!</b> 🚀\n\n"
+                    f"Mujhe aapka message mila: <i>\"{text}\"</i>\n\n"
+                    f"📢 <b>Target Channel:</b> {channel_id}\n"
+                    f"⏰ <b>Schedule Check:</b> Har 10 mins me GitHub Actions automatically check karta hai.\n"
+                    f"💻 <b>Status:</b> GitHub Actions par background run bilkul active aur 24x7 running hai!\n\n"
+                    f"Aap run details aur logs dekhne ke liye apne GitHub Repository ke <b>Actions</b> tab par ja sakte hain! ✨"
+                )
+                
+                payload = {
+                    "chat_id": chat_id,
+                    "text": reply_text,
+                    "parse_mode": "HTML"
+                }
+                requests.post(url_send_message, json=payload, timeout=10)
+
+        # Confirm/Clear updates so they are not processed in the next run
+        if last_update_id is not None:
+            requests.get(url_get_updates, params={"offset": last_update_id + 1}, timeout=5)
+            print("Successfully cleared processed Telegram updates.")
+
+    except Exception as e:
+        print(f"Error handling private replies: {e}")
+
 def main():
     # 1. Retrieve bot token and channel ID from Environment
     bot_token = os.environ.get("BOT_TOKEN")
@@ -110,6 +175,9 @@ def main():
 
     print(f"Ad Posting Run Started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Target Channel: {chat_id}")
+
+    # Process direct messages sent to the bot (instant reply proof of life!)
+    reply_to_private_messages(bot_token, chat_id)
 
     # 2. Load configurations and current state
     config_data = load_json_file(DEFAULT_CONFIG_FILE, [])
