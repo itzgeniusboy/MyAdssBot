@@ -1,0 +1,6 @@
+{
+  "name": "Telegram Ad Posting Bot",
+  "description": "An automated bot that posts scheduled ads (photos/gifs + descriptions + inline Join Channel buttons) to Telegram channels. Manage your scheduled ads, fetch Telegram file_ids, and generate all required Python, config, and GitHub Actions workflow files.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
