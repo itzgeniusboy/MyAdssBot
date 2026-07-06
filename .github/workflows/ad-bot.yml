@@ -6,13 +6,13 @@ on:
       - main
       - master
   schedule:
-    - cron: '*/10 * * * *'  # Runs every 10 minutes as a fallback safety net
+    - cron: '0 */12 * * *'  # Runs every 12 hours as a fallback safety net
   workflow_dispatch:        # Allows manual triggering from the Actions tab
 
 # Prevent multiple workflow runs from running at the same time and conflicting
 concurrency:
   group: telegram-ad-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write           # Required to commit state.json back to the repository
@@ -61,7 +61,7 @@ jobs:
           fi
 
       - name: Trigger next run (Continuous 24/7 loop)
-        if: always()        # Ensures the next loop starts even if this one had errors
+        if: success() || failure() # Restart only on success or failure, NOT if cancelled
         run: |
           echo "Triggering next 5h 50m loop cycle..."
           curl -L \

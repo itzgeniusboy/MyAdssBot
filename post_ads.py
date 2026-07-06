@@ -1305,6 +1305,10 @@ def main():
                 if should_log_ad_status:
                     print(f"Checking scheduled ads for {len(active_channels)} channels...", flush=True)
 
+                # Keep a copy of the initial state before we start updating it in this loop
+                # to prevent a post on one channel from updating the fallback and skipping other channels
+                initial_state_data_fallback = dict(state_data)
+
                 for active_chan in active_channels:
                     chan_str = str(active_chan)
                     if chan_str not in state_data["channel_states"]:
@@ -1317,7 +1321,7 @@ def main():
                         interval_minutes = ad.get("interval_minutes", 120)
                         
                         # Fallback to general timestamp if channel state is not populated
-                        last_posted = chan_state.get(ad_id, state_data.get(ad_id, 0))
+                        last_posted = chan_state.get(ad_id, initial_state_data_fallback.get(ad_id, 0))
                         ad_elapsed_minutes = (time.time() - last_posted) / 60.0
 
                         if should_log_ad_status:
@@ -1331,8 +1335,8 @@ def main():
                                 state_data["channel_states"][chan_str] = chan_state
                                 state_data[ad_id] = time.time()
                                 state_updated = True
-                                # Force immediate refresh of logging status next check
-                                last_ad_check_time = 0
+                                # Save immediately to disk so we don't lose progress if interrupted
+                                save_json_file(DEFAULT_STATE_FILE, state_data)
                 
                 if state_updated:
                     print("Saving updated state back to state.json...", flush=True)

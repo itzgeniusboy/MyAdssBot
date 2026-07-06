@@ -320,6 +320,9 @@ async function startServer() {
       state.channel_states = {};
     }
 
+    // Keep a shallow copy of the state initially to prevent updates from updating the fallback mid-loop
+    const initialFallbackState = { ...state };
+
     logs.push(`Scheduler step triggered at ${new Date().toLocaleString()}`);
     logs.push(`Loaded ${config.length} configured ads. Checking for ${channelsToPost.length} channel(s)...`);
 
@@ -337,7 +340,7 @@ async function startServer() {
         const intervalMinutes = ad.interval_minutes || 120;
         
         // Fallback to general timestamp if channel-specific state isn't populated yet
-        const lastPosted = chanState[adId] || state[adId] || 0;
+        const lastPosted = chanState[adId] || initialFallbackState[adId] || 0;
         const elapsedMinutes = (currentTime - lastPosted) / 60.0;
 
         logs.push(`Ad '${adId}': Elapsed: ${elapsedMinutes.toFixed(1)} mins, Required Interval: ${intervalMinutes} mins`);
