@@ -383,6 +383,21 @@ jobs:
     }
   };
 
+  // Computed dynamic files object combining static code templates and live JSON parameters
+  const allFiles: { [filename: string]: { code: string; language: string; description: string } } = {
+    ...staticFiles,
+    "ads_config.json": {
+      language: "json",
+      description: "Live configurations of all ad campaigns. Save this file to your GitHub repository to persist updates.",
+      code: JSON.stringify(ads, null, 2)
+    },
+    "state.json": {
+      language: "json",
+      description: "Live status tracker including registered channels and last post times. Save this file to your GitHub repository to keep them active.",
+      code: JSON.stringify(stateData, null, 2)
+    }
+  };
+
   // Fetch configs from local express server API
   const fetchConfig = async () => {
     try {
@@ -951,6 +966,9 @@ jobs:
                   <p className="text-xs text-gray-400 mt-0.5">
                     The bot will automatically broadcast ads to all listed channels.
                   </p>
+                  <div className="mt-2 p-2 bg-teal-500/5 border border-teal-500/10 rounded-lg text-[11px] text-teal-300 leading-relaxed max-w-xl">
+                    💡 <strong>Persistence Note:</strong> Newly added channels must be saved inside your repository's <code>state.json</code> file to prevent them from disappearing on restarts. Copy your live <code>state.json</code> anytime from the <strong>File Explorer</strong> tab and commit/save it to your repository!
+                  </div>
                 </div>
                 
                 {/* Manual Add Input */}
@@ -1340,7 +1358,7 @@ jobs:
             {/* Left sidebar tab lists */}
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 px-1">Source Repository Files</h3>
-              {Object.keys(staticFiles).map((filename) => (
+              {Object.keys(allFiles).map((filename) => (
                 <button
                   key={filename}
                   onClick={() => setCodeViewerTab(filename)}
@@ -1366,10 +1384,10 @@ jobs:
               <div className="bg-gray-900 px-5 py-3 border-b border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <span className="text-sm font-semibold text-white font-mono">{codeViewerTab}</span>
-                  <p className="text-xs text-gray-400 mt-0.5">{staticFiles[codeViewerTab].description}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{allFiles[codeViewerTab]?.description || "No description available"}</p>
                 </div>
                 <button
-                  onClick={() => handleCopyToClipboard(staticFiles[codeViewerTab].code, codeViewerTab)}
+                  onClick={() => handleCopyToClipboard(allFiles[codeViewerTab]?.code || "", codeViewerTab)}
                   className="px-3.5 py-1.5 bg-gray-800 hover:bg-gray-750 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 border border-gray-700 transition-colors"
                 >
                   {copiedFile === codeViewerTab ? <Check className="w-3.5 h-3.5 text-teal-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1380,7 +1398,7 @@ jobs:
               {/* Viewport code content */}
               <pre className="p-5 overflow-auto text-xs font-mono text-gray-300 bg-black max-h-[550px] leading-relaxed select-text">
                 <code>
-                  {staticFiles[codeViewerTab].code}
+                  {allFiles[codeViewerTab]?.code || ""}
                 </code>
               </pre>
             </div>
