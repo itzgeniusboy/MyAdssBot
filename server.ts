@@ -333,6 +333,25 @@ async function startServer() {
       }
       const chanState = state.channel_states[chanStr];
 
+      // Dynamically stagger ads that have never been posted on this channel
+      const unpostedAdIds = config.filter(ad => !chanState[ad.id]).map(ad => ad.id);
+      if (unpostedAdIds.length > 0) {
+        const totalAds = config.length;
+        config.forEach((ad, idx) => {
+          if (unpostedAdIds.includes(ad.id)) {
+            const intervalMin = ad.interval_minutes || 120;
+            // Space them out evenly over the interval
+            const staggerOffsetSec = (idx * (intervalMin / totalAds)) * 60.0;
+            // Simulated lastPosted so the elapsed time is staggered correctly
+            chanState[ad.id] = currentTime - (intervalMin * 60.0) + staggerOffsetSec;
+            stateUpdated = true;
+          }
+        });
+        if (stateUpdated) {
+          saveJsonFile(STATE_FILE, state);
+        }
+      }
+
       logs.push(`--- Checking Channel: ${chanStr} ---`);
 
       for (const ad of config) {

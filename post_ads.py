@@ -1316,6 +1316,22 @@ def main():
 
                     chan_state = state_data["channel_states"][chan_str]
 
+                    # Dynamically stagger ads that have never been posted on this channel
+                    unposted_ad_ids = [str(ad.get("id")) for ad in config_data if str(ad.get("id")) not in chan_state]
+                    if unposted_ad_ids:
+                        total_ads = len(config_data)
+                        for idx, ad in enumerate(config_data):
+                            a_id = str(ad.get("id"))
+                            if a_id in unposted_ad_ids:
+                                interval_min = ad.get("interval_minutes", 120)
+                                # Stagger offsets evenly over the interval
+                                stagger_offset_sec = (idx * (interval_min / total_ads)) * 60.0
+                                # Simulated last_posted so elapsed matches expected delay
+                                chan_state[a_id] = time.time() - (interval_min * 60.0) + stagger_offset_sec
+                                state_data["channel_states"][chan_str] = chan_state
+                                state_updated = True
+                        save_json_file(DEFAULT_STATE_FILE, state_data)
+
                     for ad in config_data:
                         ad_id = str(ad.get("id"))
                         interval_minutes = ad.get("interval_minutes", 120)
