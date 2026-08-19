@@ -48,7 +48,7 @@ jobs:
           # ═══════════════════════════════════════════
           # 📝 CREDENTIALS (UPDATED TOKEN)
           # ═══════════════════════════════════════════
-          BOT_TOKEN     = '8980218047:AAFGOZfc9KuzM3Po6OlqavWhJHNQ8iYcXSw'
+          BOT_TOKEN     = '8437288054:AAEb3Ti2u5BR66SzfjTl9GlddRWNCik3XkA'
           API_ID        = 32569415
           API_HASH      = '4209968745cb99d37820d5ba7b4845bd'
           ADMIN_USER_ID = 1969067694
