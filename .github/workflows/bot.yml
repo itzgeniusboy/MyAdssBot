@@ -30,6 +30,7 @@ jobs:
           import json
           import random
           import time
+          import traceback
           from telethon import TelegramClient
           from telethon.sessions import StringSession
           from telethon.tl.functions.messages import ReportRequest
@@ -45,7 +46,7 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 YOUR CREDENTIALS
+          # 📝 YOUR CREDENTIALS (Hardcoded)
           # ═══════════════════════════════════════════
           BOT_TOKEN     = '8980218047:AAHocc_K9BJd513r-5oLYv9V2e3zAmlUc1A'
           API_ID        = 32569415
@@ -56,7 +57,11 @@ jobs:
           CONFIG_FILE = 'config.json'
           MIN_REPORTS_PER_USER = 20
 
-          logging.basicConfig(level=logging.INFO)
+          # Setup logging
+          logging.basicConfig(
+              level=logging.INFO,
+              format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+          )
           logger = logging.getLogger(__name__)
 
           # ───────────── helpers ─────────────
@@ -98,7 +103,7 @@ jobs:
               user = users.get(str(user_id))
               return user and user.get('approved', False)
 
-          # ───────────── Main Menu (All Buttons) ─────────────
+          # ───────────── Main Menu ─────────────
           async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               keyboard = [
                   [InlineKeyboardButton("📝 Register", callback_data='register')],
@@ -133,7 +138,7 @@ jobs:
                       parse_mode='Markdown'
                   )
 
-          # ───────────── Registration (phone + OTP) ─────────────
+          # ───────────── Registration ─────────────
           PHONE, OTP = range(2)
 
           async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,7 +230,7 @@ jobs:
               await update.message.reply_text("Cancelled.")
               return ConversationHandler.END
 
-          # ───────────── Admin Commands (still text based for approvals) ─────────────
+          # ───────────── Admin Commands ─────────────
           async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
                   await update.message.reply_text("⛔ Unauthorized.")
@@ -336,8 +341,7 @@ jobs:
               )
               await update.message.reply_text(msg)
 
-          # ───────────── Report Button + Target Input ─────────────
-          # State for target input
+          # ───────────── Report Button ─────────────
           REPORT_TARGET = 99
 
           async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -352,11 +356,9 @@ jobs:
               config = load_config()
               target = config.get('target')
               if target:
-                  # Directly report with existing target
                   await query.edit_message_text("🚀 Reporting started with current target.")
                   await report_all_users(update, context, target)
               else:
-                  # Ask user to send target
                   await query.edit_message_text(
                       "🎯 **Target not set.**\n"
                       "Please send the target channel username (e.g., @channel) or chat ID (e.g., -100123456).\n"
@@ -370,7 +372,6 @@ jobs:
                   await update.message.reply_text("❌ Invalid target. Try again or /cancel.")
                   return REPORT_TARGET
 
-              # Save target to config permanently
               config = load_config()
               config['target'] = target
               save_config(config)
@@ -382,7 +383,7 @@ jobs:
               await update.message.reply_text("Cancelled report.")
               return ConversationHandler.END
 
-          # ───────────── Reporting from all approved users ─────────────
+          # ───────────── Reporting ─────────────
           async def report_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE, target: str):
               users = load_users()
               approved_users = {uid: data for uid, data in users.items() if data.get('approved')}
@@ -487,51 +488,71 @@ jobs:
                   logger.exception(f"User {uid} fatal error")
 
           # ───────────── Main ─────────────
+          async def send_startup_message(app):
+              """Send a test message to admin when bot starts."""
+              try:
+                  await app.bot.send_message(
+                      chat_id=ADMIN_USER_ID,
+                      text="✅ Bot is online and ready! Use /start in your bot."
+                  )
+                  logger.info("Startup message sent to admin.")
+              except Exception as e:
+                  logger.error(f"Failed to send startup message: {e}")
+
           def main():
-              if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
-                  print("⚠️ Please set BOT_TOKEN and ADMIN_USER_ID.")
-                  return
+              try:
+                  if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
+                      logger.error("❌ BOT_TOKEN or ADMIN_USER_ID not set correctly.")
+                      return
 
-              app = ApplicationBuilder().token(BOT_TOKEN).build()
+                  logger.info("🤖 Starting bot...")
+                  app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-              # Registration conversation (button entry)
-              reg_conv = ConversationHandler(
-                  entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
-                  states={
-                      PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
-                      OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
-                  },
-                  fallbacks=[CommandHandler('cancel', cancel)],
-              )
-              app.add_handler(reg_conv)
+                  # Registration conversation
+                  reg_conv = ConversationHandler(
+                      entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
+                      states={
+                          PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
+                          OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+                      },
+                      fallbacks=[CommandHandler('cancel', cancel)],
+                  )
+                  app.add_handler(reg_conv)
 
-              # Report target input conversation (triggered by report button)
-              report_conv = ConversationHandler(
-                  entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
-                  states={
-                      REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
-                  },
-                  fallbacks=[CommandHandler('cancel', cancel_report)],
-              )
-              app.add_handler(report_conv)
+                  # Report target input
+                  report_conv = ConversationHandler(
+                      entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
+                      states={
+                          REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
+                      },
+                      fallbacks=[CommandHandler('cancel', cancel_report)],
+                  )
+                  app.add_handler(report_conv)
 
-              # Main menu callback (help button)
-              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
+                  # Main menu callback
+                  app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
 
-              # Admin commands
-              app.add_handler(CommandHandler('approve', approve_user))
-              app.add_handler(CommandHandler('listusers', list_users))
-              app.add_handler(CommandHandler('settarget', set_target))
-              app.add_handler(CommandHandler('setlimit', set_limit))
-              app.add_handler(CommandHandler('setchunk', set_chunk))
-              app.add_handler(CommandHandler('setdelay', set_delay))
-              app.add_handler(CommandHandler('showconfig', show_config))
+                  # Admin commands
+                  app.add_handler(CommandHandler('approve', approve_user))
+                  app.add_handler(CommandHandler('listusers', list_users))
+                  app.add_handler(CommandHandler('settarget', set_target))
+                  app.add_handler(CommandHandler('setlimit', set_limit))
+                  app.add_handler(CommandHandler('setchunk', set_chunk))
+                  app.add_handler(CommandHandler('setdelay', set_delay))
+                  app.add_handler(CommandHandler('showconfig', show_config))
 
-              # Fallback start command
-              app.add_handler(CommandHandler('start', start_cmd))
+                  # Fallback start command
+                  app.add_handler(CommandHandler('start', start_cmd))
 
-              print("🤖 Bot started with full button-based registration and reporting.")
-              app.run_polling()
+                  # Send startup message
+                  app.post_init = send_startup_message
+
+                  logger.info("✅ Bot started successfully. Polling...")
+                  app.run_polling()
+
+              except Exception as e:
+                  logger.error(f"❌ Fatal error in main: {e}")
+                  traceback.print_exc()
 
           if __name__ == '__main__':
               main()
