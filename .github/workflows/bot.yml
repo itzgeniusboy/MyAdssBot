@@ -98,19 +98,20 @@ jobs:
               user = users.get(str(user_id))
               return user and user.get('approved', False)
 
-          # ───────────── Main Menu ─────────────
+          # ───────────── Main Menu (All Buttons) ─────────────
           async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               keyboard = [
                   [InlineKeyboardButton("📝 Register", callback_data='register')],
-                  [InlineKeyboardButton("🚀 Report (All Users)", callback_data='report_all')],
+                  [InlineKeyboardButton("🚀 Report Now", callback_data='report')],
                   [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
               ]
               reply_markup = InlineKeyboardMarkup(keyboard)
               await update.message.reply_text(
-                  "🤖 Spam Report Bot\n"
+                  "🤖 **Spam Report Bot**\n"
                   "All registered users will report together.\n"
-                  f"Each user will send minimum {MIN_REPORTS_PER_USER} reports.\n\n"
-                  "Or type /register directly.",
+                  f"Each user sends minimum {MIN_REPORTS_PER_USER} reports.\n\n"
+                  "Use the buttons below:",
+                  parse_mode='Markdown',
                   reply_markup=reply_markup
               )
 
@@ -119,45 +120,33 @@ jobs:
               await query.answer()
               data = query.data
               if data == 'register':
-                  # Pass the callback update to register_start
                   await register_start(update, context)
-              elif data == 'report_all':
-                  await report_all_users(update, context)
+              elif data == 'report':
+                  await report_button(update, context)
               elif data == 'help':
                   await query.edit_message_text(
-                      "ℹ️ **How it works:**\n"
-                      f"- Each user registers with phone + OTP.\n"
-                      f"- When someone clicks Report, ALL approved users will report.\n"
-                      f"- Each user sends minimum {MIN_REPORTS_PER_USER} reports.\n"
-                      "- Admin sets target via /settarget.\n"
-                      "- Admin approves users via /approve.",
+                      "ℹ️ **How to use:**\n"
+                      "1. Click **Register** → enter phone → OTP → verify.\n"
+                      "2. Admin approves you via /approve.\n"
+                      "3. Click **Report Now** → enter target (if not set) → all approved users report.\n"
+                      "4. Each user sends at least 20 reports.",
                       parse_mode='Markdown'
                   )
 
-          # ───────────── Registration (command + button support) ─────────────
+          # ───────────── Registration (phone + OTP) ─────────────
           PHONE, OTP = range(2)
 
           async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              """Handles both /register command and button click."""
-              # Figure out where to reply and who is user
-              if update.callback_query:
-                  query = update.callback_query
-                  await query.answer()
-                  msg = query.message
-                  user_id = query.from_user.id
-                  # Edit the button message to show we are starting
-                  await msg.edit_text("📝 Registration started. Please send your phone number.")
-              else:
-                  msg = update.message
-                  user_id = update.effective_user.id
-
+              query = update.callback_query
+              await query.answer()
+              user_id = query.from_user.id
               users = load_users()
               if str(user_id) in users:
-                  await msg.reply_text("✅ You are already registered. Wait for admin approval.")
+                  await query.edit_message_text("✅ You are already registered. Waiting for admin approval.")
                   return ConversationHandler.END
 
-              await msg.reply_text(
-                  "📱 Send your phone number with country code (e.g., +1234567890).\n"
+              await query.edit_message_text(
+                  "📱 Please send your phone number with country code (e.g., +1234567890).\n"
                   "Type /cancel to cancel."
               )
               return PHONE
@@ -177,7 +166,7 @@ jobs:
                   context.user_data['setup_user_id'] = update.effective_user.id
 
                   await update.message.reply_text(
-                      f"📨 OTP sent to {phone}. Please enter the code (6 digits)."
+                      f"📨 OTP sent to {phone}. Please enter the 6-digit code."
                   )
                   return OTP
               except Exception as e:
@@ -191,7 +180,7 @@ jobs:
               user_id = context.user_data.get('setup_user_id')
 
               if not client or not phone:
-                  await update.message.reply_text("❌ Session expired. Start again with /start or /register.")
+                  await update.message.reply_text("❌ Session expired. Start again with /start.")
                   return ConversationHandler.END
 
               try:
@@ -236,7 +225,7 @@ jobs:
               await update.message.reply_text("Cancelled.")
               return ConversationHandler.END
 
-          # ───────────── Admin Commands ─────────────
+          # ───────────── Admin Commands (still text based for approvals) ─────────────
           async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
                   await update.message.reply_text("⛔ Unauthorized.")
@@ -347,20 +336,55 @@ jobs:
               )
               await update.message.reply_text(msg)
 
-          # ───────────── Report from ALL registered users ─────────────
-          async def report_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              user_id = update.effective_user.id
+          # ───────────── Report Button + Target Input ─────────────
+          # State for target input
+          REPORT_TARGET = 99
+
+          async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              user_id = query.from_user.id
               users = load_users()
               if not is_approved(user_id, users):
-                  await update.message.reply_text("⛔ You are not approved. Register and wait for admin.")
+                  await query.edit_message_text("⛔ You are not approved. Register and wait for admin approval.")
                   return
 
               config = load_config()
               target = config.get('target')
-              if not target:
-                  await update.message.reply_text("❌ Target not set. Ask admin to run /settarget.")
-                  return
+              if target:
+                  # Directly report with existing target
+                  await query.edit_message_text("🚀 Reporting started with current target.")
+                  await report_all_users(update, context, target)
+              else:
+                  # Ask user to send target
+                  await query.edit_message_text(
+                      "🎯 **Target not set.**\n"
+                      "Please send the target channel username (e.g., @channel) or chat ID (e.g., -100123456).\n"
+                      "Type /cancel to cancel."
+                  )
+                  return REPORT_TARGET
 
+          async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              target = update.message.text.strip()
+              if not target:
+                  await update.message.reply_text("❌ Invalid target. Try again or /cancel.")
+                  return REPORT_TARGET
+
+              # Save target to config permanently
+              config = load_config()
+              config['target'] = target
+              save_config(config)
+              await update.message.reply_text(f"✅ Target set to: {target}\nStarting reporting now...")
+              await report_all_users(update, context, target)
+              return ConversationHandler.END
+
+          async def cancel_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              await update.message.reply_text("Cancelled report.")
+              return ConversationHandler.END
+
+          # ───────────── Reporting from all approved users ─────────────
+          async def report_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE, target: str):
+              users = load_users()
               approved_users = {uid: data for uid, data in users.items() if data.get('approved')}
               if not approved_users:
                   await update.message.reply_text("❌ No approved users available.")
@@ -379,14 +403,15 @@ jobs:
                       continue
 
                   try:
-                      await report_with_user_session(update, session_str, target, config, uid)
+                      await report_with_user_session(update, session_str, target, uid)
                   except Exception as e:
                       logger.error(f"User {uid} report failed: {e}")
                       await update.message.reply_text(f"❌ User {uid} failed: {str(e)[:100]}")
 
               await update.message.reply_text("✅ All users have completed reporting!")
 
-          async def report_with_user_session(update: Update, session_str: str, target: str, config: dict, uid: str):
+          async def report_with_user_session(update: Update, session_str: str, target: str, uid: str):
+              config = load_config()
               client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
               await update.message.reply_text(f"📱 Logging in as user {uid}...")
 
@@ -469,12 +494,9 @@ jobs:
 
               app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-              # Registration conversation - NOW SUPPORTS BOTH /register COMMAND AND BUTTON
+              # Registration conversation (button entry)
               reg_conv = ConversationHandler(
-                  entry_points=[
-                      CommandHandler('register', register_start),          # <-- added this!
-                      CallbackQueryHandler(register_start, pattern='^register$')
-                  ],
+                  entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
                   states={
                       PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
                       OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
@@ -483,8 +505,18 @@ jobs:
               )
               app.add_handler(reg_conv)
 
-              # Main menu callback (for report_all and help)
-              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(report_all|help)$'))
+              # Report target input conversation (triggered by report button)
+              report_conv = ConversationHandler(
+                  entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
+                  states={
+                      REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
+                  },
+                  fallbacks=[CommandHandler('cancel', cancel_report)],
+              )
+              app.add_handler(report_conv)
+
+              # Main menu callback (help button)
+              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
 
               # Admin commands
               app.add_handler(CommandHandler('approve', approve_user))
@@ -495,11 +527,10 @@ jobs:
               app.add_handler(CommandHandler('setdelay', set_delay))
               app.add_handler(CommandHandler('showconfig', show_config))
 
-              # Fallback commands
+              # Fallback start command
               app.add_handler(CommandHandler('start', start_cmd))
-              app.add_handler(CommandHandler('report', report_all_users))
 
-              print("🤖 Bot started. /register now works!")
+              print("🤖 Bot started with full button-based registration and reporting.")
               app.run_polling()
 
           if __name__ == '__main__':
