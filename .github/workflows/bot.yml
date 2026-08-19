@@ -45,7 +45,7 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 YOUR CREDENTIALS (Hardcoded)
+          # 📝 YOUR CREDENTIALS
           # ═══════════════════════════════════════════
           BOT_TOKEN     = '8980218047:AAHocc_K9BJd513r-5oLYv9V2e3zAmlUc1A'
           API_ID        = 32569415
@@ -54,8 +54,6 @@ jobs:
 
           USERS_FILE = 'users.json'
           CONFIG_FILE = 'config.json'
-
-          # Minimum reports per user
           MIN_REPORTS_PER_USER = 20
 
           logging.basicConfig(level=logging.INFO)
@@ -68,7 +66,7 @@ jobs:
                       return json.load(f)
               default = {
                   'target': None,
-                  'report_limit': 20,   # changed default to 20
+                  'report_limit': 20,
                   'chunk_size': 5,
                   'delay_between_chunks': 2,
                   'flood_wait_default': 120
@@ -111,7 +109,8 @@ jobs:
               await update.message.reply_text(
                   "🤖 Spam Report Bot\n"
                   "All registered users will report together.\n"
-                  f"Each user will send minimum {MIN_REPORTS_PER_USER} reports.",
+                  f"Each user will send minimum {MIN_REPORTS_PER_USER} reports.\n\n"
+                  "Or type /register directly.",
                   reply_markup=reply_markup
               )
 
@@ -120,6 +119,7 @@ jobs:
               await query.answer()
               data = query.data
               if data == 'register':
+                  # Pass the callback update to register_start
                   await register_start(update, context)
               elif data == 'report_all':
                   await report_all_users(update, context)
@@ -127,24 +127,38 @@ jobs:
                   await query.edit_message_text(
                       "ℹ️ **How it works:**\n"
                       f"- Each user registers with phone + OTP.\n"
-                      f"- When someone clicks Report, ALL approved users will report the target.\n"
+                      f"- When someone clicks Report, ALL approved users will report.\n"
                       f"- Each user sends minimum {MIN_REPORTS_PER_USER} reports.\n"
                       "- Admin sets target via /settarget.\n"
                       "- Admin approves users via /approve.",
                       parse_mode='Markdown'
                   )
 
-          # ───────────── Registration (stores session) ─────────────
+          # ───────────── Registration (command + button support) ─────────────
           PHONE, OTP = range(2)
 
           async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              user_id = update.effective_user.id
+              """Handles both /register command and button click."""
+              # Figure out where to reply and who is user
+              if update.callback_query:
+                  query = update.callback_query
+                  await query.answer()
+                  msg = query.message
+                  user_id = query.from_user.id
+                  # Edit the button message to show we are starting
+                  await msg.edit_text("📝 Registration started. Please send your phone number.")
+              else:
+                  msg = update.message
+                  user_id = update.effective_user.id
+
               users = load_users()
               if str(user_id) in users:
-                  await update.message.reply_text("✅ Already registered.")
+                  await msg.reply_text("✅ You are already registered. Wait for admin approval.")
                   return ConversationHandler.END
-              await update.message.reply_text(
-                  "📱 Send your phone number (e.g., +1234567890).\nType /cancel to cancel."
+
+              await msg.reply_text(
+                  "📱 Send your phone number with country code (e.g., +1234567890).\n"
+                  "Type /cancel to cancel."
               )
               return PHONE
 
@@ -177,7 +191,7 @@ jobs:
               user_id = context.user_data.get('setup_user_id')
 
               if not client or not phone:
-                  await update.message.reply_text("❌ Session expired. Start again with /start.")
+                  await update.message.reply_text("❌ Session expired. Start again with /start or /register.")
                   return ConversationHandler.END
 
               try:
@@ -281,7 +295,7 @@ jobs:
                   await update.message.reply_text("Usage: /setlimit <number> (minimum 20)")
                   return
               limit = int(args[0])
-              if limit < 20:
+              if limit < MIN_REPORTS_PER_USER:
                   await update.message.reply_text(f"❌ Limit must be at least {MIN_REPORTS_PER_USER}.")
                   return
               config = load_config()
@@ -373,7 +387,6 @@ jobs:
               await update.message.reply_text("✅ All users have completed reporting!")
 
           async def report_with_user_session(update: Update, session_str: str, target: str, config: dict, uid: str):
-              """Report using a specific user session, ensures minimum 20 reports."""
               client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
               await update.message.reply_text(f"📱 Logging in as user {uid}...")
 
@@ -381,7 +394,6 @@ jobs:
                   await client.start()
                   await update.message.reply_text(f"✅ User {uid} logged in.")
 
-                  # Resolve target
                   try:
                       if str(target).lstrip('-').isdigit():
                           entity = await client.get_entity(int(target))
@@ -393,24 +405,20 @@ jobs:
                   await update.message.reply_text(f"🎯 Target: {entity.title or entity.username or entity.id}")
 
                   limit = config.get('report_limit', 20)
-                  # Fetch messages, but ensure we get at least MIN_REPORTS_PER_USER
-                  # If limit < MIN, override
                   if limit < MIN_REPORTS_PER_USER:
                       limit = MIN_REPORTS_PER_USER
+
                   messages = []
                   async for msg in client.iter_messages(entity, limit=limit):
                       if msg.id:
                           messages.append(msg.id)
 
-                  # If we got fewer than MIN, duplicate the list to reach MIN
                   if len(messages) < MIN_REPORTS_PER_USER:
                       original_count = len(messages)
-                      # Duplicate messages to reach minimum
                       while len(messages) < MIN_REPORTS_PER_USER:
                           messages.extend(messages[:MIN_REPORTS_PER_USER - len(messages)])
                       await update.message.reply_text(
-                          f"ℹ️ User {uid}: Only {original_count} unique messages found. "
-                          f"Repeating to reach {MIN_REPORTS_PER_USER} reports."
+                          f"ℹ️ User {uid}: Only {original_count} unique messages. Repeating to reach {MIN_REPORTS_PER_USER}."
                       )
 
                   total = len(messages)
@@ -461,9 +469,12 @@ jobs:
 
               app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-              # Registration conversation
+              # Registration conversation - NOW SUPPORTS BOTH /register COMMAND AND BUTTON
               reg_conv = ConversationHandler(
-                  entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
+                  entry_points=[
+                      CommandHandler('register', register_start),          # <-- added this!
+                      CallbackQueryHandler(register_start, pattern='^register$')
+                  ],
                   states={
                       PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
                       OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
@@ -472,8 +483,8 @@ jobs:
               )
               app.add_handler(reg_conv)
 
-              # Main menu callback
-              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(register|report_all|help)$'))
+              # Main menu callback (for report_all and help)
+              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(report_all|help)$'))
 
               # Admin commands
               app.add_handler(CommandHandler('approve', approve_user))
@@ -488,7 +499,7 @@ jobs:
               app.add_handler(CommandHandler('start', start_cmd))
               app.add_handler(CommandHandler('report', report_all_users))
 
-              print("🤖 Bot started with per-user reporting (min 20 reports).")
+              print("🤖 Bot started. /register now works!")
               app.run_polling()
 
           if __name__ == '__main__':
