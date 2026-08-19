@@ -2,15 +2,13 @@ name: Run Telegram Bot 24x7 (5h50m per run)
 
 on:
   schedule:
-    # Har 6 ghante pe trigger – 24×7 coverage
     - cron: '0 */6 * * *'
-  workflow_dispatch:   # Manual trigger bhi
+  workflow_dispatch:
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # 5 hours 50 minutes
-
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,7 +47,7 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 CREDENTIALS (UPDATED TOKEN)
+          # 📝 CREDENTIALS
           # ═══════════════════════════════════════════
           BOT_TOKEN     = '8437288054:AAEb3Ti2u5BR66SzfjTl9GlddRWNCik3XkA'
           API_ID        = 32569415
@@ -500,63 +498,63 @@ jobs:
               except Exception as e:
                   logger.error(f"Failed to send startup message: {e}")
 
-          def main():
-              try:
-                  if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
-                      logger.error("❌ BOT_TOKEN or ADMIN_USER_ID not set correctly.")
-                      return
+          def run_bot():
+              """Run the bot with auto-restart on crash."""
+              while True:
+                  try:
+                      logger.info("🤖 Starting bot instance...")
+                      app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-                  logger.info("🤖 Starting bot...")
-                  app = ApplicationBuilder().token(BOT_TOKEN).build()
+                      # Registration conversation
+                      reg_conv = ConversationHandler(
+                          entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
+                          states={
+                              PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
+                              OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+                          },
+                          fallbacks=[CommandHandler('cancel', cancel)],
+                      )
+                      app.add_handler(reg_conv)
 
-                  # Registration conversation
-                  reg_conv = ConversationHandler(
-                      entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
-                      states={
-                          PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
-                          OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
-                      },
-                      fallbacks=[CommandHandler('cancel', cancel)],
-                  )
-                  app.add_handler(reg_conv)
+                      # Report target input
+                      report_conv = ConversationHandler(
+                          entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
+                          states={
+                              REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
+                          },
+                          fallbacks=[CommandHandler('cancel', cancel_report)],
+                      )
+                      app.add_handler(report_conv)
 
-                  # Report target input
-                  report_conv = ConversationHandler(
-                      entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
-                      states={
-                          REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
-                      },
-                      fallbacks=[CommandHandler('cancel', cancel_report)],
-                  )
-                  app.add_handler(report_conv)
+                      # Main menu callback
+                      app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
 
-                  # Main menu callback
-                  app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
+                      # Admin commands
+                      app.add_handler(CommandHandler('approve', approve_user))
+                      app.add_handler(CommandHandler('listusers', list_users))
+                      app.add_handler(CommandHandler('settarget', set_target))
+                      app.add_handler(CommandHandler('setlimit', set_limit))
+                      app.add_handler(CommandHandler('setchunk', set_chunk))
+                      app.add_handler(CommandHandler('setdelay', set_delay))
+                      app.add_handler(CommandHandler('showconfig', show_config))
 
-                  # Admin commands
-                  app.add_handler(CommandHandler('approve', approve_user))
-                  app.add_handler(CommandHandler('listusers', list_users))
-                  app.add_handler(CommandHandler('settarget', set_target))
-                  app.add_handler(CommandHandler('setlimit', set_limit))
-                  app.add_handler(CommandHandler('setchunk', set_chunk))
-                  app.add_handler(CommandHandler('setdelay', set_delay))
-                  app.add_handler(CommandHandler('showconfig', show_config))
+                      # Fallback start command
+                      app.add_handler(CommandHandler('start', start_cmd))
 
-                  # Fallback start command
-                  app.add_handler(CommandHandler('start', start_cmd))
+                      # Send startup message
+                      app.post_init = send_startup_message
 
-                  # Send startup message
-                  app.post_init = send_startup_message
-
-                  logger.info("✅ Bot started successfully. Polling...")
-                  app.run_polling()
-
-              except Exception as e:
-                  logger.error(f"❌ Fatal error in main: {e}")
-                  traceback.print_exc()
+                      logger.info("✅ Bot started successfully. Polling...")
+                      app.run_polling()
+                      break  # if polling ends normally (shouldn't)
+                  except Exception as e:
+                      logger.error(f"❌ Bot crashed: {e}")
+                      traceback.print_exc()
+                      logger.info("🔄 Restarting bot in 10 seconds...")
+                      time.sleep(10)
 
           if __name__ == '__main__':
-              main()
+              run_bot()
           EOF
 
           echo "✅ Files created."
@@ -566,6 +564,6 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run bot (5h50m)
+      - name: Run bot (5h50m with auto-restart)
         run: python reporter.py
         continue-on-error: true
