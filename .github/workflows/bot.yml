@@ -46,9 +46,9 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 YOUR CREDENTIALS (Hardcoded)
+          # 📝 CREDENTIALS (UPDATED TOKEN)
           # ═══════════════════════════════════════════
-          BOT_TOKEN     = '8980218047:AAHocc_K9BJd513r-5oLYv9V2e3zAmlUc1A'
+          BOT_TOKEN     = '8980218047:AAExWMInFL3EGHGnI9OAR6xACV6aOlJFy4w'
           API_ID        = 32569415
           API_HASH      = '4209968745cb99d37820d5ba7b4845bd'
           ADMIN_USER_ID = 1969067694
@@ -57,7 +57,6 @@ jobs:
           CONFIG_FILE = 'config.json'
           MIN_REPORTS_PER_USER = 20
 
-          # Setup logging
           logging.basicConfig(
               level=logging.INFO,
               format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
