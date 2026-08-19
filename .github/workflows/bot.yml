@@ -1,19 +1,22 @@
-name: Run Telegram Bot (5h50m per run)
+name: Run Telegram Bot 24x7 (5h50m per run)
 
 on:
   schedule:
+    # Har 6 ghante pe trigger – 24×7 coverage
     - cron: '0 */6 * * *'
-  workflow_dispatch:
+  workflow_dispatch:   # Manual trigger bhi
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 350   # 5 hours 50 minutes
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: Create bot files
         run: |
           cat > requirements.txt << 'EOF'
@@ -488,7 +491,6 @@ jobs:
 
           # ───────────── Main ─────────────
           async def send_startup_message(app):
-              """Send a test message to admin when bot starts."""
               try:
                   await app.bot.send_message(
                       chat_id=ADMIN_USER_ID,
