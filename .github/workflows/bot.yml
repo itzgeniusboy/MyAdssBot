@@ -31,9 +31,13 @@ jobs:
           import random
           import time
           from telethon import TelegramClient
+          from telethon.sessions import StringSession
           from telethon.tl.functions.messages import ReportRequest
           from telethon.tl.types import InputReportReasonSpam
-          from telethon.errors import PhoneNumberInvalidError, PhoneCodeInvalidError, SessionPasswordNeededError
+          from telethon.errors import (
+              PhoneNumberInvalidError, PhoneCodeInvalidError,
+              SessionPasswordNeededError, RPCError
+          )
           from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
           from telegram.ext import (
               ApplicationBuilder, CommandHandler, ContextTypes,
@@ -41,7 +45,7 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 YOUR CREDENTIALS
+          # 📝 YOUR CREDENTIALS (Hardcoded)
           # ═══════════════════════════════════════════
           BOT_TOKEN     = '8980218047:AAHocc_K9BJd513r-5oLYv9V2e3zAmlUc1A'
           API_ID        = 32569415
@@ -50,6 +54,9 @@ jobs:
 
           USERS_FILE = 'users.json'
           CONFIG_FILE = 'config.json'
+
+          # Minimum reports per user
+          MIN_REPORTS_PER_USER = 20
 
           logging.basicConfig(level=logging.INFO)
           logger = logging.getLogger(__name__)
@@ -61,11 +68,10 @@ jobs:
                       return json.load(f)
               default = {
                   'target': None,
-                  'report_limit': 100,
+                  'report_limit': 20,   # changed default to 20
                   'chunk_size': 5,
                   'delay_between_chunks': 2,
-                  'flood_wait_default': 120,
-                  'reporting_phone': None
+                  'flood_wait_default': 120
               }
               save_config(default)
               return default
@@ -94,16 +100,18 @@ jobs:
               user = users.get(str(user_id))
               return user and user.get('approved', False)
 
-          # ───────────── Main Menu (Inline Buttons) ─────────────
+          # ───────────── Main Menu ─────────────
           async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               keyboard = [
                   [InlineKeyboardButton("📝 Register", callback_data='register')],
-                  [InlineKeyboardButton("🚀 Report", callback_data='report')],
+                  [InlineKeyboardButton("🚀 Report (All Users)", callback_data='report_all')],
                   [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
               ]
               reply_markup = InlineKeyboardMarkup(keyboard)
               await update.message.reply_text(
-                  "🤖 Spam Report Bot\nChoose an option:",
+                  "🤖 Spam Report Bot\n"
+                  "All registered users will report together.\n"
+                  f"Each user will send minimum {MIN_REPORTS_PER_USER} reports.",
                   reply_markup=reply_markup
               )
 
@@ -113,31 +121,30 @@ jobs:
               data = query.data
               if data == 'register':
                   await register_start(update, context)
-              elif data == 'report':
-                  await report_cmd(update, context)
+              elif data == 'report_all':
+                  await report_all_users(update, context)
               elif data == 'help':
                   await query.edit_message_text(
-                      "ℹ️ **Help**\n"
-                      "- Register: complete phone verification\n"
-                      "- Report: start spam reporting (after admin approval)\n"
-                      "Admin commands (type): /approve, /settarget, etc.",
+                      "ℹ️ **How it works:**\n"
+                      f"- Each user registers with phone + OTP.\n"
+                      f"- When someone clicks Report, ALL approved users will report the target.\n"
+                      f"- Each user sends minimum {MIN_REPORTS_PER_USER} reports.\n"
+                      "- Admin sets target via /settarget.\n"
+                      "- Admin approves users via /approve.",
                       parse_mode='Markdown'
                   )
-              else:
-                  await query.edit_message_text("❌ Unknown option.")
 
-          # ───────────── Registration with buttons ─────────────
+          # ───────────── Registration (stores session) ─────────────
           PHONE, OTP = range(2)
 
           async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
               user_id = update.effective_user.id
               users = load_users()
               if str(user_id) in users:
-                  await update.message.reply_text("✅ Already registered. Wait for admin approval.")
+                  await update.message.reply_text("✅ Already registered.")
                   return ConversationHandler.END
               await update.message.reply_text(
-                  "📱 Please send your phone number with country code (e.g., +1234567890).\n"
-                  "Type /cancel to cancel."
+                  "📱 Send your phone number (e.g., +1234567890).\nType /cancel to cancel."
               )
               return PHONE
 
@@ -146,78 +153,76 @@ jobs:
               if not re.match(r'^\+\d{7,15}$', phone):
                   await update.message.reply_text("❌ Invalid format. Try again or /cancel.")
                   return PHONE
-              otp = generate_otp()
-              expiry = int(time.time()) + 300
-              context.user_data['register_phone'] = phone
-              context.user_data['register_otp'] = otp
-              context.user_data['register_otp_expiry'] = expiry
 
-              keyboard = [
-                  [InlineKeyboardButton("✅ Verify OTP", callback_data='verify_otp')],
-                  [InlineKeyboardButton("❌ Cancel", callback_data='cancel_reg')]
-              ]
-              reply_markup = InlineKeyboardMarkup(keyboard)
+              try:
+                  client = TelegramClient(StringSession(), API_ID, API_HASH)
+                  await client.connect()
+                  await client.send_code_request(phone)
+                  context.user_data['setup_client'] = client
+                  context.user_data['setup_phone'] = phone
+                  context.user_data['setup_user_id'] = update.effective_user.id
 
-              await update.message.reply_text(
-                  f"📨 Your OTP: `{otp}`\n(Expires in 5 minutes)\n\n"
-                  "Click 'Verify OTP' after typing the code in chat, or 'Cancel'.",
-                  parse_mode='Markdown',
-                  reply_markup=reply_markup
-              )
-              return OTP
-
-          async def otp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              query = update.callback_query
-              await query.answer()
-              if query.data == 'cancel_reg':
-                  context.user_data.clear()
-                  await query.edit_message_text("❌ Registration cancelled.")
+                  await update.message.reply_text(
+                      f"📨 OTP sent to {phone}. Please enter the code (6 digits)."
+                  )
+                  return OTP
+              except Exception as e:
+                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
                   return ConversationHandler.END
-              # verify_otp
-              await query.edit_message_text(
-                  "📝 Please type the OTP you received (6 digits)."
-              )
-              return OTP
 
           async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              user_input = update.message.text.strip()
-              user_id = update.effective_user.id
-              stored_otp = context.user_data.get('register_otp')
-              expiry = context.user_data.get('register_otp_expiry', 0)
-              if not stored_otp or int(time.time()) > expiry:
+              code = update.message.text.strip()
+              client = context.user_data.get('setup_client')
+              phone = context.user_data.get('setup_phone')
+              user_id = context.user_data.get('setup_user_id')
+
+              if not client or not phone:
                   await update.message.reply_text("❌ Session expired. Start again with /start.")
                   return ConversationHandler.END
-              if user_input != stored_otp:
+
+              try:
+                  await client.sign_in(phone, code)
+                  session_str = client.session.save()
+                  await client.disconnect()
+
+                  users = load_users()
+                  users[str(user_id)] = {
+                      'phone': phone,
+                      'verified': True,
+                      'approved': False,
+                      'registered_at': int(time.time()),
+                      'session': session_str
+                  }
+                  save_users(users)
+
+                  await update.message.reply_text("✅ Verified! Waiting for admin approval.")
+                  if ADMIN_USER_ID:
+                      try:
+                          await context.bot.send_message(
+                              chat_id=ADMIN_USER_ID,
+                              text=f"📩 New registration:\nUser ID: {user_id}\nPhone: {phone}\n/approve {user_id}"
+                          )
+                      except Exception as e:
+                          logger.error(f"Admin notify failed: {e}")
+                  context.user_data.clear()
+                  return ConversationHandler.END
+
+              except SessionPasswordNeededError:
+                  await update.message.reply_text("🔐 2FA enabled. Send your password.")
+                  return OTP
+              except PhoneCodeInvalidError:
                   await update.message.reply_text("❌ Wrong OTP. Try again or /cancel.")
                   return OTP
-
-              phone = context.user_data.get('register_phone')
-              users = load_users()
-              users[str(user_id)] = {
-                  'phone': phone,
-                  'verified': True,
-                  'approved': False,
-                  'registered_at': int(time.time())
-              }
-              save_users(users)
-              await update.message.reply_text("✅ Verified! Waiting for admin approval.")
-              if ADMIN_USER_ID:
-                  try:
-                      await context.bot.send_message(
-                          chat_id=ADMIN_USER_ID,
-                          text=f"📩 New registration:\nUser ID: {user_id}\nPhone: {phone}\n/approve {user_id}"
-                      )
-                  except Exception as e:
-                      logger.error(f"Admin notify failed: {e}")
-              context.user_data.clear()
-              return ConversationHandler.END
+              except Exception as e:
+                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+                  return ConversationHandler.END
 
           async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
               context.user_data.clear()
               await update.message.reply_text("Cancelled.")
               return ConversationHandler.END
 
-          # ───────────── Admin commands (remain text) ─────────────
+          # ───────────── Admin Commands ─────────────
           async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
                   await update.message.reply_text("⛔ Unauthorized.")
@@ -235,7 +240,7 @@ jobs:
               save_users(users)
               await update.message.reply_text(f"✅ User {user_id} approved.")
               try:
-                  await context.bot.send_message(chat_id=int(user_id), text="🎉 Approved! Use /start → Report.")
+                  await context.bot.send_message(chat_id=int(user_id), text="🎉 Approved! You can now report.")
               except Exception as e:
                   logger.error(f"Notify user failed: {e}")
 
@@ -273,10 +278,14 @@ jobs:
                   return
               args = context.args
               if not args or not args[0].isdigit():
-                  await update.message.reply_text("Usage: /setlimit <number>")
+                  await update.message.reply_text("Usage: /setlimit <number> (minimum 20)")
+                  return
+              limit = int(args[0])
+              if limit < 20:
+                  await update.message.reply_text(f"❌ Limit must be at least {MIN_REPORTS_PER_USER}.")
                   return
               config = load_config()
-              config['report_limit'] = int(args[0])
+              config['report_limit'] = limit
               save_config(config)
               await update.message.reply_text(f"✅ Report limit set to: {config['report_limit']}")
 
@@ -311,144 +320,68 @@ jobs:
                   await update.message.reply_text("⛔ Unauthorized.")
                   return
               config = load_config()
+              users = load_users()
+              approved_count = sum(1 for u in users.values() if u.get('approved'))
               msg = (
                   "📊 Current Config:\n"
                   f"Target: {config.get('target') or 'Not Set'}\n"
-                  f"Report Limit: {config.get('report_limit')}\n"
+                  f"Report Limit (per user): {config.get('report_limit')}\n"
                   f"Chunk Size: {config.get('chunk_size')}\n"
                   f"Delay: {config.get('delay_between_chunks')}s\n"
                   f"Flood Wait: {config.get('flood_wait_default')}s\n"
-                  f"Reporting Phone: {config.get('reporting_phone') or 'Not Set'}"
+                  f"Approved Users: {approved_count}"
               )
               await update.message.reply_text(msg)
 
-          # ───────────── Setup reporting account ─────────────
-          SETUP_PHONE, SETUP_OTP, SETUP_PASSWORD = range(10, 13)
-
-          async def setup_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              if not is_admin(update.effective_user.id):
-                  await update.message.reply_text("⛔ Unauthorized.")
-                  return ConversationHandler.END
-              await update.message.reply_text(
-                  "📱 Enter the phone number of the Telegram account you want to use for reporting.\n"
-                  "Format: +1234567890\nType /cancel to cancel."
-              )
-              return SETUP_PHONE
-
-          async def setup_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              phone = update.message.text.strip()
-              if not re.match(r'^\+\d{7,15}$', phone):
-                  await update.message.reply_text("❌ Invalid format. Try again or /cancel.")
-                  return SETUP_PHONE
-              context.user_data['setup_phone'] = phone
-              try:
-                  client = TelegramClient('reporting_session', API_ID, API_HASH)
-                  await client.connect()
-                  if not await client.is_user_authorized():
-                      await client.send_code_request(phone)
-                      context.user_data['setup_client'] = client
-                      await update.message.reply_text(
-                          f"📨 OTP sent to {phone}. Please enter the code.\n"
-                          "(If you have 2FA, you will be asked for password next.)"
-                      )
-                      return SETUP_OTP
-                  else:
-                      await client.disconnect()
-                      await update.message.reply_text("❌ Session already logged in. Delete session file and try again.")
-                      return ConversationHandler.END
-              except PhoneNumberInvalidError:
-                  await update.message.reply_text("❌ Invalid phone number. Try again or /cancel.")
-                  return SETUP_PHONE
-              except Exception as e:
-                  logger.error(f"Send code error: {e}")
-                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
-                  return ConversationHandler.END
-
-          async def setup_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              code = update.message.text.strip()
-              client = context.user_data.get('setup_client')
-              phone = context.user_data.get('setup_phone')
-              if not client or not phone:
-                  await update.message.reply_text("❌ Session expired. Start again with /setupaccount.")
-                  return ConversationHandler.END
-              try:
-                  await client.sign_in(phone, code)
-                  config = load_config()
-                  config['reporting_phone'] = phone
-                  save_config(config)
-                  await update.message.reply_text(f"✅ Account {phone} set up successfully!")
-                  await client.disconnect()
-                  context.user_data.clear()
-                  return ConversationHandler.END
-              except SessionPasswordNeededError:
-                  await update.message.reply_text("🔐 2FA enabled. Enter your password.")
-                  return SETUP_PASSWORD
-              except PhoneCodeInvalidError:
-                  await update.message.reply_text("❌ Invalid OTP. Try again or /cancel.")
-                  return SETUP_OTP
-              except Exception as e:
-                  logger.error(f"Sign in error: {e}")
-                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
-                  return ConversationHandler.END
-
-          async def setup_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              password = update.message.text.strip()
-              client = context.user_data.get('setup_client')
-              phone = context.user_data.get('setup_phone')
-              if not client:
-                  await update.message.reply_text("❌ Session expired. /setupaccount again.")
-                  return ConversationHandler.END
-              try:
-                  await client.sign_in(password=password)
-                  config = load_config()
-                  config['reporting_phone'] = phone
-                  save_config(config)
-                  await update.message.reply_text(f"✅ Account {phone} set up with 2FA successfully!")
-                  await client.disconnect()
-                  context.user_data.clear()
-                  return ConversationHandler.END
-              except Exception as e:
-                  await update.message.reply_text(f"❌ Wrong password or error: {str(e)[:100]}")
-                  return SETUP_PASSWORD
-
-          async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              client = context.user_data.get('setup_client')
-              if client:
-                  try:
-                      await client.disconnect()
-                  except:
-                      pass
-              context.user_data.clear()
-              await update.message.reply_text("Setup cancelled.")
-              return ConversationHandler.END
-
-          # ───────────── Report command (via button or /report) ─────────────
-          async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              # support both command and callback
+          # ───────────── Report from ALL registered users ─────────────
+          async def report_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
               user_id = update.effective_user.id
               users = load_users()
               if not is_approved(user_id, users):
-                  await update.message.reply_text("⛔ Not approved. Register and wait for admin.")
+                  await update.message.reply_text("⛔ You are not approved. Register and wait for admin.")
                   return
+
               config = load_config()
-              if not config.get('reporting_phone'):
-                  await update.message.reply_text("❌ Reporting account not set. Ask admin to run /setupaccount.")
-                  return
-              if not config.get('target'):
+              target = config.get('target')
+              if not target:
                   await update.message.reply_text("❌ Target not set. Ask admin to run /settarget.")
                   return
-              await update.message.reply_text("🚀 Starting report process...")
-              await report_with_account(update, config)
 
-          async def report_with_account(update: Update, config):
-              phone = config.get('reporting_phone')
-              client = TelegramClient('reporting_session', API_ID, API_HASH)
-              await update.message.reply_text("📱 Logging into reporting account...")
+              approved_users = {uid: data for uid, data in users.items() if data.get('approved')}
+              if not approved_users:
+                  await update.message.reply_text("❌ No approved users available.")
+                  return
+
+              await update.message.reply_text(
+                  f"🚀 Reporting from {len(approved_users)} users...\n"
+                  f"Each user will send at least {MIN_REPORTS_PER_USER} reports.\n"
+                  "Progress will be shown below."
+              )
+
+              for uid, user_data in approved_users.items():
+                  session_str = user_data.get('session')
+                  if not session_str:
+                      await update.message.reply_text(f"⚠️ User {uid} has no session. Skipping.")
+                      continue
+
+                  try:
+                      await report_with_user_session(update, session_str, target, config, uid)
+                  except Exception as e:
+                      logger.error(f"User {uid} report failed: {e}")
+                      await update.message.reply_text(f"❌ User {uid} failed: {str(e)[:100]}")
+
+              await update.message.reply_text("✅ All users have completed reporting!")
+
+          async def report_with_user_session(update: Update, session_str: str, target: str, config: dict, uid: str):
+              """Report using a specific user session, ensures minimum 20 reports."""
+              client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+              await update.message.reply_text(f"📱 Logging in as user {uid}...")
+
               try:
-                  await client.start(phone=phone)
-                  await update.message.reply_text(f"✅ Logged in as {phone}")
+                  await client.start()
+                  await update.message.reply_text(f"✅ User {uid} logged in.")
 
-                  target = config.get('target')
+                  # Resolve target
                   try:
                       if str(target).lstrip('-').isdigit():
                           entity = await client.get_entity(int(target))
@@ -459,23 +392,33 @@ jobs:
 
                   await update.message.reply_text(f"🎯 Target: {entity.title or entity.username or entity.id}")
 
-                  limit = config.get('report_limit', 100)
+                  limit = config.get('report_limit', 20)
+                  # Fetch messages, but ensure we get at least MIN_REPORTS_PER_USER
+                  # If limit < MIN, override
+                  if limit < MIN_REPORTS_PER_USER:
+                      limit = MIN_REPORTS_PER_USER
                   messages = []
                   async for msg in client.iter_messages(entity, limit=limit):
                       if msg.id:
                           messages.append(msg.id)
 
-                  if not messages:
-                      await update.message.reply_text("❌ No messages found.")
-                      await client.disconnect()
-                      return
+                  # If we got fewer than MIN, duplicate the list to reach MIN
+                  if len(messages) < MIN_REPORTS_PER_USER:
+                      original_count = len(messages)
+                      # Duplicate messages to reach minimum
+                      while len(messages) < MIN_REPORTS_PER_USER:
+                          messages.extend(messages[:MIN_REPORTS_PER_USER - len(messages)])
+                      await update.message.reply_text(
+                          f"ℹ️ User {uid}: Only {original_count} unique messages found. "
+                          f"Repeating to reach {MIN_REPORTS_PER_USER} reports."
+                      )
 
                   total = len(messages)
                   chunk_size = config.get('chunk_size', 5)
                   delay = config.get('delay_between_chunks', 2)
                   flood_wait = config.get('flood_wait_default', 120)
 
-                  await update.message.reply_text(f"📨 Found {total} messages. Reporting in chunks...")
+                  await update.message.reply_text(f"📨 User {uid}: Sending {total} reports...")
 
                   success, i = 0, 0
                   while i < total:
@@ -483,41 +426,39 @@ jobs:
                       try:
                           await client(ReportRequest(peer=entity, id=chunk, reason=InputReportReasonSpam()))
                           success += len(chunk)
-                          await update.message.reply_text(f"✅ Reported {success}/{total}")
+                          await update.message.reply_text(f"✅ User {uid}: Reported {success}/{total}")
                           i += chunk_size
                       except Exception as e:
                           err = str(e)
-                          logger.error(f"Error: {err}")
+                          logger.error(f"User {uid} error: {err}")
                           if 'FLOOD' in err:
                               match = re.search(r'FLOOD_WAWAIT_(\d+)', err)
                               wait = int(match.group(1)) if match else flood_wait
-                              await update.message.reply_text(f"⏳ Flood wait {wait}s...")
+                              await update.message.reply_text(f"⏳ User {uid}: Flood wait {wait}s...")
                               await asyncio.sleep(wait)
                               continue
                           elif 'PEER_ID_INVALID' in err:
-                              await update.message.reply_text("❌ Invalid target!")
+                              await update.message.reply_text(f"❌ User {uid}: Invalid target!")
                               break
                           else:
-                              await update.message.reply_text(f"❌ Failed: {err[:100]}")
+                              await update.message.reply_text(f"❌ User {uid}: Failed: {err[:100]}")
                               i += chunk_size
                               continue
                       await asyncio.sleep(delay)
 
-                  await update.message.reply_text(f"✅ Done! Reported: {success}/{total}")
+                  await update.message.reply_text(f"✅ User {uid}: Done! Reported {success} messages.")
                   await client.disconnect()
+
               except Exception as e:
-                  error_msg = str(e)
-                  if 'A wait of' in error_msg:
-                      await update.message.reply_text(f"⏳ {error_msg}")
-                  else:
-                      await update.message.reply_text(f"❌ Login/Report Error: {error_msg[:100]}")
-                  logger.exception("Fatal error in report")
+                  await update.message.reply_text(f"❌ User {uid}: Login/Report error: {str(e)[:100]}")
+                  logger.exception(f"User {uid} fatal error")
 
           # ───────────── Main ─────────────
           def main():
               if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
                   print("⚠️ Please set BOT_TOKEN and ADMIN_USER_ID.")
                   return
+
               app = ApplicationBuilder().token(BOT_TOKEN).build()
 
               # Registration conversation
@@ -525,29 +466,14 @@ jobs:
                   entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
                   states={
                       PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
-                      OTP: [
-                          CallbackQueryHandler(otp_callback, pattern='^(verify_otp|cancel_reg)$'),
-                          MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)
-                      ],
+                      OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
                   },
                   fallbacks=[CommandHandler('cancel', cancel)],
               )
               app.add_handler(reg_conv)
 
-              # Setup account conversation
-              setup_conv = ConversationHandler(
-                  entry_points=[CommandHandler('setupaccount', setup_account_start)],
-                  states={
-                      SETUP_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_phone)],
-                      SETUP_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_otp)],
-                      SETUP_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_password)],
-                  },
-                  fallbacks=[CommandHandler('cancel', cancel_setup)],
-              )
-              app.add_handler(setup_conv)
-
               # Main menu callback
-              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(register|report|help)$'))
+              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(register|report_all|help)$'))
 
               # Admin commands
               app.add_handler(CommandHandler('approve', approve_user))
@@ -558,11 +484,11 @@ jobs:
               app.add_handler(CommandHandler('setdelay', set_delay))
               app.add_handler(CommandHandler('showconfig', show_config))
 
-              # User commands (fallback)
+              # Fallback commands
               app.add_handler(CommandHandler('start', start_cmd))
-              app.add_handler(CommandHandler('report', report_cmd))
+              app.add_handler(CommandHandler('report', report_all_users))
 
-              print("🤖 Bot started with inline menus.")
+              print("🤖 Bot started with per-user reporting (min 20 reports).")
               app.run_polling()
 
           if __name__ == '__main__':
