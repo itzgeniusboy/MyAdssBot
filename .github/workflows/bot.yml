@@ -2,33 +2,25 @@ name: Run Telegram Bot (5h50m per run)
 
 on:
   schedule:
-    # Har 6 ghante pe trigger (12:00 AM, 6:00 AM, 12:00 PM, 6:00 PM UTC)
     - cron: '0 */6 * * *'
-  workflow_dispatch:   # Manual trigger bhi
+  workflow_dispatch:
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # 5 hours 50 minutes
-
+    timeout-minutes: 350
     steps:
-      - name: Checkout (empty repo – sirf workflow chalega)
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
       - name: Create bot script and requirements
         run: |
-          # ─── requirements.txt ───
           cat > requirements.txt << 'EOF'
           telethon
           python-telegram-bot==20.3
           EOF
 
-          # ─── reporter.py (full script with hardcoded credentials) ───
           cat > reporter.py << 'EOF'
           #!/usr/bin/env python3
           import asyncio
@@ -42,10 +34,10 @@ jobs:
           from telethon.tl.functions.messages import ReportRequest
           from telethon.tl.types import InputReportReasonSpam
           from telethon.errors import PhoneNumberInvalidError, PhoneCodeInvalidError, SessionPasswordNeededError
-          from telegram import Update
+          from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
           from telegram.ext import (
               ApplicationBuilder, CommandHandler, ContextTypes,
-              ConversationHandler, MessageHandler, filters
+              ConversationHandler, MessageHandler, filters, CallbackQueryHandler
           )
 
           # ═══════════════════════════════════════════
@@ -56,15 +48,13 @@ jobs:
           API_HASH      = '4209968745cb99d37820d5ba7b4845bd'
           ADMIN_USER_ID = 1969067694
 
-          # Files
           USERS_FILE = 'users.json'
           CONFIG_FILE = 'config.json'
 
           logging.basicConfig(level=logging.INFO)
           logger = logging.getLogger(__name__)
 
-          # ──────────────────── Config helpers ────────────────────
-
+          # ───────────── helpers ─────────────
           def load_config():
               if os.path.exists(CONFIG_FILE):
                   with open(CONFIG_FILE, 'r') as f:
@@ -83,8 +73,6 @@ jobs:
           def save_config(config):
               with open(CONFIG_FILE, 'w') as f:
                   json.dump(config, f, indent=2)
-
-          # ──────────────────── User helpers ────────────────────
 
           def load_users():
               if os.path.exists(USERS_FILE):
@@ -106,8 +94,7 @@ jobs:
               user = users.get(str(user_id))
               return user and user.get('approved', False)
 
-          # ──────────────────── Registration flow (Users) ────────────────────
-
+          # ───────────── Registration with buttons ─────────────
           PHONE, OTP = range(2)
 
           async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,22 +104,49 @@ jobs:
                   await update.message.reply_text("✅ Already registered. Wait for admin approval.")
                   return ConversationHandler.END
               await update.message.reply_text(
-                  "📱 Send your phone number (e.g., +1234567890).\nType /cancel to cancel."
+                  "📱 Send your phone number with country code (e.g., +1234567890).\n"
+                  "Type /cancel to cancel."
               )
               return PHONE
 
           async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
               phone = update.message.text.strip()
               if not re.match(r'^\+\d{7,15}$', phone):
-                  await update.message.reply_text("❌ Invalid format. Use +<country><number>. Try again.")
+                  await update.message.reply_text("❌ Invalid format. Try again or /cancel.")
                   return PHONE
-              user_id = update.effective_user.id
               otp = generate_otp()
               expiry = int(time.time()) + 300
               context.user_data['register_phone'] = phone
               context.user_data['register_otp'] = otp
               context.user_data['register_otp_expiry'] = expiry
-              await update.message.reply_text(f"📨 Your OTP: `{otp}`\n(Expires in 5 min)", parse_mode='Markdown')
+
+              keyboard = [
+                  [InlineKeyboardButton("✅ Verify OTP", callback_data='verify_otp')],
+                  [InlineKeyboardButton("❌ Cancel", callback_data='cancel_reg')]
+              ]
+              reply_markup = InlineKeyboardMarkup(keyboard)
+
+              await update.message.reply_text(
+                  f"📨 Your OTP: `{otp}`\n(Expires in 5 minutes)\n\n"
+                  "Click 'Verify OTP' after entering the code in chat, or 'Cancel'.",
+                  parse_mode='Markdown',
+                  reply_markup=reply_markup
+              )
+              return OTP
+
+          async def otp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              user_id = update.effective_user.id
+              if query.data == 'cancel_reg':
+                  context.user_data.clear()
+                  await query.edit_message_text("❌ Registration cancelled.")
+                  return ConversationHandler.END
+
+              # verify_otp pressed – ask user to type the OTP
+              await query.edit_message_text(
+                  "📝 Please type the OTP you received in the chat (6 digits)."
+              )
               return OTP
 
           async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,11 +155,12 @@ jobs:
               stored_otp = context.user_data.get('register_otp')
               expiry = context.user_data.get('register_otp_expiry', 0)
               if not stored_otp or int(time.time()) > expiry:
-                  await update.message.reply_text("❌ Session expired. /register again.")
+                  await update.message.reply_text("❌ Session expired. Start again with /register.")
                   return ConversationHandler.END
               if user_input != stored_otp:
                   await update.message.reply_text("❌ Wrong OTP. Try again or /cancel.")
                   return OTP
+
               phone = context.user_data.get('register_phone')
               users = load_users()
               users[str(user_id)] = {
@@ -172,8 +187,7 @@ jobs:
               await update.message.reply_text("Cancelled.")
               return ConversationHandler.END
 
-          # ──────────────────── Admin approval ────────────────────
-
+          # ───────────── Admin commands (same as before) ─────────────
           async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
                   await update.message.reply_text("⛔ Unauthorized.")
@@ -208,8 +222,6 @@ jobs:
                   status = "✅ Approved" if data.get('approved') else "⏳ Pending"
                   msg += f"ID: {uid}, Phone: {data.get('phone')}, Status: {status}\n"
               await update.message.reply_text(msg)
-
-          # ──────────────────── Admin Config Commands ────────────────────
 
           async def set_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
@@ -280,8 +292,7 @@ jobs:
               )
               await update.message.reply_text(msg)
 
-          # ──────────── Setup Reporting Account (Phone + OTP) ────────────
-
+          # ───────────── Setup reporting account (unchanged) ─────────────
           SETUP_PHONE, SETUP_OTP, SETUP_PASSWORD = range(10, 13)
 
           async def setup_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -381,8 +392,7 @@ jobs:
               await update.message.reply_text("Setup cancelled.")
               return ConversationHandler.END
 
-          # ──────────────────── Reporting command ────────────────────
-
+          # ───────────── Report command (only approved users) ─────────────
           async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               user_id = update.effective_user.id
               users = load_users()
@@ -472,18 +482,16 @@ jobs:
                       await update.message.reply_text(f"❌ Login/Report Error: {error_msg[:100]}")
                   logger.exception("Fatal error in report")
 
-          # ──────────────────── Start command ────────────────────
-
           async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               await update.message.reply_text(
                   "🤖 Spam Report Bot\n\n"
                   "User commands:\n"
-                  "/register – Register with phone + OTP\n"
+                  "/register – Register with phone + OTP (buttons)\n"
                   "/report – Start reporting (if approved)\n\n"
                   "Admin commands:\n"
                   "/approve <user_id> – Approve a user\n"
                   "/listusers – Show all users\n"
-                  "/setupaccount – Set the phone number for reporting\n"
+                  "/setupaccount – Set the reporting phone number\n"
                   "/settarget <username_or_id> – Change target\n"
                   "/setlimit <number> – Change report limit\n"
                   "/setchunk <number> – Change chunk size\n"
@@ -491,23 +499,26 @@ jobs:
                   "/showconfig – Show current config"
               )
 
-          # ──────────────────── Main ────────────────────
-
           def main():
               if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
-                  print("⚠️ Please set BOT_TOKEN and ADMIN_USER_ID in the script.")
+                  print("⚠️ Please set BOT_TOKEN and ADMIN_USER_ID.")
                   return
               app = ApplicationBuilder().token(BOT_TOKEN).build()
-              # Registration
+
+              # Registration with callback
               reg_conv = ConversationHandler(
                   entry_points=[CommandHandler('register', register_start)],
                   states={
                       PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
-                      OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+                      OTP: [
+                          CallbackQueryHandler(otp_callback, pattern='^(verify_otp|cancel_reg)$'),
+                          MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)
+                      ],
                   },
                   fallbacks=[CommandHandler('cancel', cancel)],
               )
               app.add_handler(reg_conv)
+
               # Setup account
               setup_conv = ConversationHandler(
                   entry_points=[CommandHandler('setupaccount', setup_account_start)],
@@ -519,6 +530,7 @@ jobs:
                   fallbacks=[CommandHandler('cancel', cancel_setup)],
               )
               app.add_handler(setup_conv)
+
               # Admin commands
               app.add_handler(CommandHandler('approve', approve_user))
               app.add_handler(CommandHandler('listusers', list_users))
@@ -527,17 +539,19 @@ jobs:
               app.add_handler(CommandHandler('setchunk', set_chunk))
               app.add_handler(CommandHandler('setdelay', set_delay))
               app.add_handler(CommandHandler('showconfig', show_config))
+
               # User commands
               app.add_handler(CommandHandler('report', report_cmd))
               app.add_handler(CommandHandler('start', start_cmd))
-              print("🤖 Bot started. All settings configurable via commands.")
+
+              print("🤖 Bot started with inline buttons for registration.")
               app.run_polling()
 
           if __name__ == '__main__':
               main()
           EOF
 
-          echo "✅ All files created."
+          echo "✅ Files created."
 
       - name: Install dependencies
         run: |
@@ -546,4 +560,4 @@ jobs:
 
       - name: Run bot (5h50m)
         run: python reporter.py
-        continue-on-error: true   # crash hone par bhi job fail na ho
+        continue-on-error: true
