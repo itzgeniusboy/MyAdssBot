@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Create bot script and requirements
+      - name: Create bot files
         run: |
           cat > requirements.txt << 'EOF'
           telethon
@@ -41,7 +41,7 @@ jobs:
           )
 
           # ═══════════════════════════════════════════
-          # 📝 YOUR CREDENTIALS (HARDCODED)
+          # 📝 YOUR CREDENTIALS
           # ═══════════════════════════════════════════
           BOT_TOKEN     = '8980218047:AAHocc_K9BJd513r-5oLYv9V2e3zAmlUc1A'
           API_ID        = 32569415
@@ -94,6 +94,38 @@ jobs:
               user = users.get(str(user_id))
               return user and user.get('approved', False)
 
+          # ───────────── Main Menu (Inline Buttons) ─────────────
+          async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              keyboard = [
+                  [InlineKeyboardButton("📝 Register", callback_data='register')],
+                  [InlineKeyboardButton("🚀 Report", callback_data='report')],
+                  [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
+              ]
+              reply_markup = InlineKeyboardMarkup(keyboard)
+              await update.message.reply_text(
+                  "🤖 Spam Report Bot\nChoose an option:",
+                  reply_markup=reply_markup
+              )
+
+          async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              data = query.data
+              if data == 'register':
+                  await register_start(update, context)
+              elif data == 'report':
+                  await report_cmd(update, context)
+              elif data == 'help':
+                  await query.edit_message_text(
+                      "ℹ️ **Help**\n"
+                      "- Register: complete phone verification\n"
+                      "- Report: start spam reporting (after admin approval)\n"
+                      "Admin commands (type): /approve, /settarget, etc.",
+                      parse_mode='Markdown'
+                  )
+              else:
+                  await query.edit_message_text("❌ Unknown option.")
+
           # ───────────── Registration with buttons ─────────────
           PHONE, OTP = range(2)
 
@@ -104,7 +136,7 @@ jobs:
                   await update.message.reply_text("✅ Already registered. Wait for admin approval.")
                   return ConversationHandler.END
               await update.message.reply_text(
-                  "📱 Send your phone number with country code (e.g., +1234567890).\n"
+                  "📱 Please send your phone number with country code (e.g., +1234567890).\n"
                   "Type /cancel to cancel."
               )
               return PHONE
@@ -128,7 +160,7 @@ jobs:
 
               await update.message.reply_text(
                   f"📨 Your OTP: `{otp}`\n(Expires in 5 minutes)\n\n"
-                  "Click 'Verify OTP' after entering the code in chat, or 'Cancel'.",
+                  "Click 'Verify OTP' after typing the code in chat, or 'Cancel'.",
                   parse_mode='Markdown',
                   reply_markup=reply_markup
               )
@@ -137,15 +169,13 @@ jobs:
           async def otp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
               query = update.callback_query
               await query.answer()
-              user_id = update.effective_user.id
               if query.data == 'cancel_reg':
                   context.user_data.clear()
                   await query.edit_message_text("❌ Registration cancelled.")
                   return ConversationHandler.END
-
-              # verify_otp pressed – ask user to type the OTP
+              # verify_otp
               await query.edit_message_text(
-                  "📝 Please type the OTP you received in the chat (6 digits)."
+                  "📝 Please type the OTP you received (6 digits)."
               )
               return OTP
 
@@ -155,7 +185,7 @@ jobs:
               stored_otp = context.user_data.get('register_otp')
               expiry = context.user_data.get('register_otp_expiry', 0)
               if not stored_otp or int(time.time()) > expiry:
-                  await update.message.reply_text("❌ Session expired. Start again with /register.")
+                  await update.message.reply_text("❌ Session expired. Start again with /start.")
                   return ConversationHandler.END
               if user_input != stored_otp:
                   await update.message.reply_text("❌ Wrong OTP. Try again or /cancel.")
@@ -187,7 +217,7 @@ jobs:
               await update.message.reply_text("Cancelled.")
               return ConversationHandler.END
 
-          # ───────────── Admin commands (same as before) ─────────────
+          # ───────────── Admin commands (remain text) ─────────────
           async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
               if not is_admin(update.effective_user.id):
                   await update.message.reply_text("⛔ Unauthorized.")
@@ -205,7 +235,7 @@ jobs:
               save_users(users)
               await update.message.reply_text(f"✅ User {user_id} approved.")
               try:
-                  await context.bot.send_message(chat_id=int(user_id), text="🎉 Approved! Use /report.")
+                  await context.bot.send_message(chat_id=int(user_id), text="🎉 Approved! Use /start → Report.")
               except Exception as e:
                   logger.error(f"Notify user failed: {e}")
 
@@ -292,7 +322,7 @@ jobs:
               )
               await update.message.reply_text(msg)
 
-          # ───────────── Setup reporting account (unchanged) ─────────────
+          # ───────────── Setup reporting account ─────────────
           SETUP_PHONE, SETUP_OTP, SETUP_PASSWORD = range(10, 13)
 
           async def setup_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,8 +422,9 @@ jobs:
               await update.message.reply_text("Setup cancelled.")
               return ConversationHandler.END
 
-          # ───────────── Report command (only approved users) ─────────────
+          # ───────────── Report command (via button or /report) ─────────────
           async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              # support both command and callback
               user_id = update.effective_user.id
               users = load_users()
               if not is_approved(user_id, users):
@@ -482,32 +513,16 @@ jobs:
                       await update.message.reply_text(f"❌ Login/Report Error: {error_msg[:100]}")
                   logger.exception("Fatal error in report")
 
-          async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-              await update.message.reply_text(
-                  "🤖 Spam Report Bot\n\n"
-                  "User commands:\n"
-                  "/register – Register with phone + OTP (buttons)\n"
-                  "/report – Start reporting (if approved)\n\n"
-                  "Admin commands:\n"
-                  "/approve <user_id> – Approve a user\n"
-                  "/listusers – Show all users\n"
-                  "/setupaccount – Set the reporting phone number\n"
-                  "/settarget <username_or_id> – Change target\n"
-                  "/setlimit <number> – Change report limit\n"
-                  "/setchunk <number> – Change chunk size\n"
-                  "/setdelay <seconds> – Change delay\n"
-                  "/showconfig – Show current config"
-              )
-
+          # ───────────── Main ─────────────
           def main():
               if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
                   print("⚠️ Please set BOT_TOKEN and ADMIN_USER_ID.")
                   return
               app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-              # Registration with callback
+              # Registration conversation
               reg_conv = ConversationHandler(
-                  entry_points=[CommandHandler('register', register_start)],
+                  entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
                   states={
                       PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
                       OTP: [
@@ -519,7 +534,7 @@ jobs:
               )
               app.add_handler(reg_conv)
 
-              # Setup account
+              # Setup account conversation
               setup_conv = ConversationHandler(
                   entry_points=[CommandHandler('setupaccount', setup_account_start)],
                   states={
@@ -531,6 +546,9 @@ jobs:
               )
               app.add_handler(setup_conv)
 
+              # Main menu callback
+              app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^(register|report|help)$'))
+
               # Admin commands
               app.add_handler(CommandHandler('approve', approve_user))
               app.add_handler(CommandHandler('listusers', list_users))
@@ -540,11 +558,11 @@ jobs:
               app.add_handler(CommandHandler('setdelay', set_delay))
               app.add_handler(CommandHandler('showconfig', show_config))
 
-              # User commands
-              app.add_handler(CommandHandler('report', report_cmd))
+              # User commands (fallback)
               app.add_handler(CommandHandler('start', start_cmd))
+              app.add_handler(CommandHandler('report', report_cmd))
 
-              print("🤖 Bot started with inline buttons for registration.")
+              print("🤖 Bot started with inline menus.")
               app.run_polling()
 
           if __name__ == '__main__':
